@@ -52,6 +52,16 @@ static void post_progress(int pct)
         PostMessageW(g_hwnd_result, WM_APP_PROGRESS, (WPARAM)pct, 0);
 }
 
+/* 监控状态上报："标题\n副行" */
+static void post_moninfo(const wchar_t* title, const wchar_t* sub)
+{
+    if (g_hwnd_result) {
+        wchar_t buf[700];
+        _snwprintf(buf, 700, L"%s\n%s", title, sub ? sub : L"");
+        PostMessageW(g_hwnd_result, WM_APP_MONINFO, 0, (LPARAM)wcs_dup(buf));
+    }
+}
+
 static void post_error(BOOL on, const wchar_t* msg)
 {
     if (g_hwnd_result)
@@ -304,6 +314,7 @@ int op_read(const CFGMODEL* m, wchar_t drive)
     wchar_t fullpath[MAX_PATH];
     _snwprintf(fullpath, MAX_PATH, L"%c:\\%s", drive, best);
     applog(CH_ENGINE, LOG_INFO, L"[%s] 命中文件：%s", OP, best);
+    post_moninfo(L"文件已找到", fullpath);
 
     /* 通配符可变部分捕获 */
     wchar_t cap[128] = L"";

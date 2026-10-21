@@ -33,6 +33,16 @@ static DWORD g_dev_mask = 0;
 static int g_cur_model = 0;         /* 当前机型索引（与轮询解耦） */
 static int g_ident_index = 0;       /* 标识生成计数 */
 
+/* ---------- 监控窗格（PANE_BOTTOM） ---------- */
+static volatile LONG g_monitoring = 0;              /* 监控开关 */
+static HWND g_hmonbtn[3] = { NULL, NULL, NULL };    /* 开始/停止/退出 */
+static HWND g_hmonstatus = NULL, g_hmonfile = NULL;
+static const COLORREF g_btncol[3] = {
+    RGB(0, 150, 0),     /* 开始监控：绿 */
+    RGB(210, 0, 0),     /* 停止监控：红 */
+    RGB(170, 170, 170), /* 退出：灰 */
+};
+
 /* ---------- DPI 辅助 ---------- */
 static UINT get_system_dpi(void)
 {
@@ -181,6 +191,14 @@ static void refresh_buttons(void)
         }
     }
     EnableWindow(GetDlgItem(g_hmain, IDC_BTN_STOP), busy);
+
+    /* 监控按钮状态与颜色（自绘按钮需重绘） */
+    BOOL mon = g_monitoring != 0;
+    EnableWindow(g_hmonbtn[0], !mon);   /* 开始监控：关闭时可用（绿） */
+    EnableWindow(g_hmonbtn[1], mon);    /* 停止监控：开启时可用（红） */
+    EnableWindow(g_hmonbtn[2], TRUE);   /* 退出：常可用（灰） */
+    for (int i = 0; i < 3; i++)
+        if (g_hmonbtn[i]) InvalidateRect(g_hmonbtn[i], NULL, TRUE);
 }
 
 static void set_mode_badge(int trigger)
@@ -246,6 +264,16 @@ static void set_verdict(const wchar_t* v)
         set_text_color(g_hverdict, L"PASS", RGB(0, 150, 0));
     else
         set_text_color(g_hverdict, L"FAIL", RGB(200, 0, 0));
+}
+
+/* 监控状态行：标题黑 + 副行蓝（副行空则清空） */
+static void set_monstatus(const wchar_t* title, const wchar_t* sub)
+{
+    SetWindowTextW(g_hmonstatus, title ? title : L"");
+    if (sub && sub[0])
+        set_text_color(g_hmonfile, sub, RGB(0, 90, 200));
+    else
+        SetWindowTextW(g_hmonfile, L"");
 }
 
 static void update_device_text(void)
@@ -437,11 +465,27 @@ static void layout(void)
                W - 2 * m - half - dpi_scale(6), cmdh, TRUE);
     y += cmdh + dpi_scale(4);
 
-    /* PANE_FILE：判定徽标 + 内容 */
+    /* 底部监控窗格（PANE_BOTTOM）：判定徽标 + 状态行 → 命中文件行 → 内容区 → 按钮行 */
     MoveWindow(g_hverdict, m, y, dpi_scale(70), rowh, TRUE);
-    int fileh = H - y - m;
+    MoveWindow(g_hmonstatus, m + dpi_scale(78), y,
+               W - 2 * m - dpi_scale(78), rowh, TRUE);
+    y += rowh + dpi_scale(2);
+    MoveWindow(g_hmonfile, m, y, W - 2 * m, rowh, TRUE);
+    y += rowh + dpi_scale(2);
+
+    int btnrow = rowh + dpi_scale(8);
+    int fileh = H - y - btnrow - m * 2;
     if (fileh < dpi_scale(40)) fileh = dpi_scale(40);
-    MoveWindow(g_hfile, m + dpi_scale(78), y, W - 2 * m - dpi_scale(78), fileh - dpi_scale(2), TRUE);
+    MoveWindow(g_hfile, m, y, W - 2 * m, fileh, TRUE);
+    y += fileh + dpi_scale(6);
+
+    /* 三个监控按钮：水平居中 */
+    int bw = dpi_scale(92), gap = dpi_scale(18);
+    int bx = (W - (bw * 3 + gap * 2)) / 2;
+    if (bx < m) bx = m;
+    MoveWindow(g_hmonbtn[0], bx, y, bw, rowh, TRUE);
+    MoveWindow(g_hmonbtn[1], bx + bw + gap, y, bw, rowh, TRUE);
+    MoveWindow(g_hmonbtn[2], bx + (bw + gap) * 2, y, bw, rowh, TRUE);
 }
 
 /* ============================================================
@@ -672,6 +716,13 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         g_hdev = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_DEVICE, L"设备状态：检测中…");
         g_herr = MKCTL(L"RICHEDIT50W", 0, ES_READONLY, IDC_STC_ERROR, L"");
         g_hprog = MKCTL(PROGRESS_CLASSW, 0, PBS_SMOOTH, IDC_PBAR_TASK, L"");
+
+        /* 底部监控窗格 */
+        g_hmonstatus = MKCTL(L"STATIC", 0, SS_CENTER, IDC_STC_MONSTATUS, L"监控已停止");
+        g_hmonfile = MKCTL(L"STATIC", 0, SS_CENTER, IDC_STC_MONFILE, L"");
+        g_hmonbtn[0] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_MONSTART, L"开始监控");
+        g_hmonbtn[1] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_MONSTOP, L"停止监控");
+        g_hmonbtn[2] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_EXIT, L"退出");
         g_hcmd[0] = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
                           ES_MULTILINE | ES_READONLY | WS_VSCROLL, IDC_EDIT_ENGINE, L"");
         g_hcmd[1] = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
@@ -696,6 +747,31 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_SIZE:
         layout();
         return 0;
+
+    case WM_DRAWITEM: {
+        /* 自绘监控按钮：按状态变色（禁用=浅灰，开始=绿，停止=红，退出=灰） */
+        DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lp;
+        int idx = -1;
+        if (dis->CtlID == IDC_BTN_MONSTART) idx = 0;
+        else if (dis->CtlID == IDC_BTN_MONSTOP) idx = 1;
+        else if (dis->CtlID == IDC_BTN_EXIT) idx = 2;
+        if (idx < 0) break;
+        BOOL disabled = (dis->itemState & ODS_DISABLED) != 0;
+        COLORREF bg = disabled ? RGB(205, 205, 205) : g_btncol[idx];
+        COLORREF fg = disabled ? RGB(130, 130, 130) : RGB(255, 255, 255);
+        HBRUSH br = CreateSolidBrush(bg);
+        FillRect(dis->hDC, &dis->rcItem, br);
+        DeleteObject(br);
+        SetBkMode(dis->hDC, TRANSPARENT);
+        SetTextColor(dis->hDC, fg);
+        wchar_t txt[64];
+        GetWindowTextW(dis->hwndItem, txt, 64);
+        HFONT of = (HFONT)SelectObject(dis->hDC, g_font);
+        DrawTextW(dis->hDC, txt, -1, &dis->rcItem,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dis->hDC, of);
+        return TRUE;
+    }
 
     case WM_COMMAND: {
         int id = LOWORD(wp);
@@ -730,6 +806,26 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             break;
         case IDC_BTN_CONFIG:
             open_config_dialog();
+            break;
+        case IDC_BTN_MONSTART:
+            if (code == BN_CLICKED) {
+                InterlockedExchange(&g_monitoring, 1);
+                set_monstatus(L"监控已开启：等待插入可移动磁盘…", L"");
+                applog(CH_ENGINE, LOG_UI, L"[UI] 操作员开启监控（插盘自动执行当前机型任务）");
+                refresh_buttons();
+            }
+            break;
+        case IDC_BTN_MONSTOP:
+            if (code == BN_CLICKED) {
+                InterlockedExchange(&g_monitoring, 0);
+                InterlockedExchange(&g_stop, 1);   /* 同时停止进行中的任务 */
+                set_monstatus(L"监控已停止", L"");
+                applog(CH_ENGINE, LOG_UI, L"[UI] 操作员停止监控");
+                refresh_buttons();
+            }
+            break;
+        case IDC_BTN_EXIT:
+            if (code == BN_CLICKED) PostMessageW(h, WM_CLOSE, 0, 0);
             break;
         case IDC_CHK_TOPMOST:
             if (code == BN_CLICKED) {
@@ -775,9 +871,9 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             if (changed & (1u << (d - L'A'))) {
                 if (inserted) {
                     applog(CH_ENGINE, LOG_UI, L"[DEV] 检测到可移动磁盘 %c:\\ 插入", d);
-                    /* 机型 = 当前下拉框选择（与轮询解耦）；机型开启 AUTORUN 则自动执行 */
+                    /* 机型 = 当前下拉框选择（与轮询解耦）；监控开启或机型 AUTORUN=1 时自动执行 */
                     CFGMODEL* m = &g_cfg.models[g_cur_model];
-                    if (cfg_get_int(m, L"AUTORUN", 0) && !g_running)
+                    if ((g_monitoring || cfg_get_int(m, L"AUTORUN", 0)) && !g_running)
                         task_run_async(g_cur_model, TRIGGER_AUTO);
                 } else {
                     applog(CH_ENGINE, LOG_UI, L"[DEV] 可移动磁盘 %c:\\ 已拔出", d);
@@ -809,6 +905,16 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_MODE:
         set_mode_badge((int)wp);
         return 0;
+    case WM_APP_MONINFO: {
+        wchar_t* s = (wchar_t*)lp;
+        if (s) {
+            wchar_t* nl = wcschr(s, L'\n');
+            if (nl) { *nl = 0; set_monstatus(s, nl + 1); }
+            else set_monstatus(s, L"");
+            free(s);
+        }
+        return 0;
+    }
     case WM_APP_TASKDONE:
         InterlockedExchange(&g_running, 0);
         InterlockedExchange(&g_stop, 0);

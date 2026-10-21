@@ -20,6 +20,13 @@
 #define IDC_CHK_TOPMOST     1008   /* 窗口置顶复选框 HWND_TOPMOST/NOTOPMOST    */
 #define IDC_STC_MODE        1009   /* 手动/自动模式标记                        */
 
+/* ---------- PANE_BOTTOM 监控窗格（底部） ---------- */
+#define IDC_BTN_MONSTART    1010   /* 开始监控（监控关闭时绿色，开启后置灰）   */
+#define IDC_BTN_MONSTOP     1011   /* 停止监控（监控开启时红色，关闭后置灰）   */
+#define IDC_BTN_EXIT        1012   /* 退出（灰色）                             */
+#define IDC_STC_MONSTATUS   1102   /* 监控状态行（居中，如"监控已停止"）       */
+#define IDC_STC_MONFILE     1103   /* 命中文件行（居中蓝色，如"找到文件: F:\readme.txt"） */
+
 /* ---------- PANE_LABEL ---------- */
 #define IDC_STC_LABEL       1101   /* 标签信息行                               */
 

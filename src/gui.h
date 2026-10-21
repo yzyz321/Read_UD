@@ -17,6 +17,7 @@
 #define WM_APP_ERROR      (WM_APP + 7)   /* wparam=1亮出错徽标 0熄灭 */
 #define WM_APP_TASKDONE   (WM_APP + 8)   /* wparam=退出码 */
 #define WM_APP_MODE       (WM_APP + 9)   /* wparam=TRIGGER_AUTO/MANUAL */
+#define WM_APP_MONINFO    (WM_APP + 10)  /* lparam=堆串 "标题\n副行"（监控状态） */
 
 /* ---------- 运行状态 ---------- */
 extern volatile LONG g_running;      /* 任务执行中 */
