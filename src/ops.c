@@ -548,8 +548,9 @@ int op_label_write(const CFGMODEL* m, wchar_t drive)
     }
     const wchar_t* vol = cfg_get(m, L"VOLUME");
     if (!vol || !vol[0]) {
-        fail(OP, L"未配置 VOLUME，无法写入标签");
-        return 1;
+        /* 未配置卷标：转执行文件写入（按配置 SRCPATH→DSTPATH 复制） */
+        applog(CH_ENGINE, LOG_WARN, L"[%s] 本机型未配置 VOLUME，自动转执行文件写入（按配置复制）", OP);
+        return op_write(m, drive);
     }
     wchar_t root[8];
     _snwprintf(root, 8, L"%c:\\", drive);

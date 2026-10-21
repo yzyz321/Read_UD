@@ -101,7 +101,8 @@
     <tr><td>IDC_COMBO_MODEL 机型下拉</td><td>显示 DISPLAYNAME；切换只影响后续任务（与轮询解耦）</td></tr>
     <tr><td>IDC_STC_MONSTATUS 监控状态行</td><td>"监控已停止"=红色字；"监控已开启"=绿色字；"文件已找到"=黑色字（副行蓝色）</td></tr>
     <tr><td>IDC_BTN_CLEARCMD 清屏</td><td>点击清空 CMD-A（IDC_EDIT_ENGINE）显示内容，文件日志不受影响</td></tr>
-    <tr><td>设备状态 IDC_STC_DEVICE</td><td>始终由 1s 轮询驱动显示插拔信息，不受监控开/关影响</td></tr>
+    <tr><td>设备状态 IDC_STC_DEVICE</td><td>粗体显示；始终由 1s 轮询驱动显示插拔信息，不受监控开/关影响</td></tr>
+    <tr><td>IDC_BTN_WRITELABEL 写入标签/升级</td><td>VOLUME 已配置=写卷标并回读比对；VOLUME 为空=自动转执行文件写入（按 SRCPATH→DSTPATH 复制）</td></tr>
   </table>
   <div class="note">※ 已废弃：IDC_STC_MODE（原"○ 待机/模式标记"），自 v1.0.0-alpha.3 起从界面移除。</div>
 </div>

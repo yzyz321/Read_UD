@@ -29,7 +29,7 @@ static HWND g_hmodel = NULL, g_hlabel = NULL, g_hdev = NULL,
             g_hverdict = NULL, g_hfile = NULL, g_hchk_top = NULL,
             g_hchk_hotkey = NULL;
 static BOOL g_hotkey_enabled = FALSE;   /* 快捷键使能（IDC_CHK_HOTKEY） */
-static HFONT g_font = NULL, g_font_mono = NULL;
+static HFONT g_font = NULL, g_font_mono = NULL, g_font_bold = NULL;
 static UINT g_dpi = 96;
 static DWORD g_dev_mask = 0;
 static int g_cur_model = 0;         /* 当前机型索引（与轮询解耦） */
@@ -98,16 +98,20 @@ static void dpi_update_font(void)
 {
     if (g_font) DeleteObject(g_font);
     if (g_font_mono) DeleteObject(g_font_mono);
+    if (g_font_bold) DeleteObject(g_font_bold);
     int h1 = -MulDiv(9, (int)g_dpi, 72);
     g_font = CreateFontW(h1, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
                          0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     g_font_mono = CreateFontW(h1, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
                               0, 0, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+    g_font_bold = CreateFontW(h1, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
+                              0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     if (g_hmain) {
         EnumChildWindows(g_hmain, font_enum, (LPARAM)g_font);
         if (g_hcmd[0]) SendMessageW(g_hcmd[0], WM_SETFONT, (WPARAM)g_font_mono, TRUE);
         if (g_hcmd[1]) SendMessageW(g_hcmd[1], WM_SETFONT, (WPARAM)g_font_mono, TRUE);
         if (g_hfile)   SendMessageW(g_hfile, WM_SETFONT, (WPARAM)g_font_mono, TRUE);
+        if (g_hdev)    SendMessageW(g_hdev, WM_SETFONT, (WPARAM)g_font_bold, TRUE);  /* 设备状态粗体 */
     }
 }
 
