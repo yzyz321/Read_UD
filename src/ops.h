@@ -20,10 +20,9 @@ extern volatile LONG g_stop;
 /* ---------- 各操作 ---------- */
 int op_write(const CFGMODEL* m, wchar_t drive);            /* 写入（COPY 模式） */
 int op_read(const CFGMODEL* m, wchar_t drive);             /* 读取+判定，结果显示 */
-int op_format(const CFGMODEL* m, wchar_t drive, HWND hwnd);/* 格式化（含确认） */
+int op_format(const CFGMODEL* m, wchar_t drive, HWND hwnd);/* 格式化（含确认；卷标在此步按 VOLUME 写入） */
 int op_usbinfo(const CFGMODEL* m, wchar_t drive);          /* USB 通讯模式识别 */
 int op_label_read(const CFGMODEL* m, wchar_t drive);       /* 读取标签 */
-int op_label_write(const CFGMODEL* m, wchar_t drive);      /* 写入标签（回读校验） */
 int op_rwtest(const CFGMODEL* m, wchar_t drive);           /* 读写测试（写读比对） */
 
 /* 标识生成输出（CMD-B 通道演示：SN/MAC 按台生成，Phase 3 完整化） */

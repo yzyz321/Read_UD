@@ -539,40 +539,6 @@ int op_label_read(const CFGMODEL* m, wchar_t drive)
     return 0;
 }
 
-int op_label_write(const CFGMODEL* m, wchar_t drive)
-{
-    const wchar_t* OP = L"LABELW";
-    if (!cfg_enabled(m, L"ENABLE_WRITE")) {
-        applog(CH_ENGINE, LOG_WARN, L"[%s] 本机型已禁用写入（ENABLE_WRITE=0），跳过", OP);
-        return 0;
-    }
-    const wchar_t* vol = cfg_get(m, L"VOLUME");
-    if (!vol || !vol[0]) {
-        /* 未配置卷标：转执行文件写入（按配置 SRCPATH→DSTPATH 复制） */
-        applog(CH_ENGINE, LOG_WARN, L"[%s] 本机型未配置 VOLUME，自动转执行文件写入（按配置复制）", OP);
-        return op_write(m, drive);
-    }
-    wchar_t root[8];
-    _snwprintf(root, 8, L"%c:\\", drive);
-    if (!SetVolumeLabelW(root, vol)) {
-        fail(OP, L"写入卷标失败（错误码 %lu）", GetLastError());
-        return 1;
-    }
-    /* 回读比对 */
-    wchar_t back[128] = L"";
-    DWORD ser = 0, mc = 0, fl = 0;
-    GetVolumeInformationW(root, back, 128, &ser, &mc, &fl, NULL, 0);
-    if (wcscmp(back, vol) != 0) {
-        fail(OP, L"回读不一致：期望 \"%s\"，实际 \"%s\"", vol, back);
-        return 1;
-    }
-    applog(CH_ENGINE, LOG_OK, L"[%s] 写入标签并回读一致：%s", OP, vol);
-    wchar_t txt[512];
-    _snwprintf(txt, 512, L"%c:  卷标=\"%s\"（刚写入）", drive, vol);
-    post_label(txt);
-    return 0;
-}
-
 /* ============================================================
  * rwtest - 读写测试（写 8MB 测试文件 → 回读 → MD5 比对 → 速率）
  * ============================================================ */

@@ -254,6 +254,12 @@ static void set_verdict(const wchar_t* v)
         set_text_color(g_hverdict, L"FAIL", RGB(200, 0, 0));
 }
 
+/* 指定颜色显示判定徽标（复制结果等） */
+static void set_verdict_colored(const wchar_t* txt, COLORREF color)
+{
+    set_text_color(g_hverdict, txt, color);
+}
+
 /* 监控状态行：标题按颜色显示（停止=红 / 开启=绿 / 命中=黑）+ 副行蓝 */
 static void set_monstatus(const wchar_t* title, const wchar_t* sub, COLORREF titlecol)
 {
@@ -346,7 +352,7 @@ void task_run_async(int model_index, int trigger)
 
 /* ---------- 单操作线程 ---------- */
 
-enum { OP_FORMAT = 0, OP_LABELREAD = 1, OP_LABELWRITE = 2, OP_IDENT = 3 };
+enum { OP_FORMAT = 0, OP_LABELREAD = 1, OP_COPY = 2, OP_IDENT = 3 };
 
 typedef struct {
     int op;
@@ -358,13 +364,20 @@ static DWORD WINAPI op_thread(LPVOID p)
 {
     OPARG* a = (OPARG*)p;
     CFGMODEL* m = &g_cfg.models[a->model_index];
+    int rc = 0;
     switch (a->op) {
-    case OP_FORMAT:     op_format(m, a->drive, g_hmain); break;
-    case OP_LABELREAD:  op_label_read(m, a->drive); break;
-    case OP_LABELWRITE: op_label_write(m, a->drive); break;
-    case OP_IDENT:      g_ident_index++; op_gen_ident(m, a->drive, g_ident_index); break;
+    case OP_FORMAT:     rc = op_format(m, a->drive, g_hmain); break;
+    case OP_LABELREAD:  rc = op_label_read(m, a->drive); break;
+    case OP_COPY:
+        rc = op_write(m, a->drive);
+        /* 复制结果徽标：成功绿 Copy Complete! / 失败红 Copy Failure! */
+        PostMessageW(g_hmain, WM_APP_VERDICT,
+                     rc == 0 ? 1 : 2,
+                     (LPARAM)wcs_dup(rc == 0 ? L"Copy Complete!" : L"Copy Failure!"));
+        break;
+    case OP_IDENT:      g_ident_index++; rc = op_gen_ident(m, a->drive, g_ident_index); break;
     }
-    PostMessageW(g_hmain, WM_APP_TASKDONE, 0, 0);
+    PostMessageW(g_hmain, WM_APP_TASKDONE, rc, 0);
     free(a);
     return 0;
 }
@@ -796,7 +809,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             run_single(OP_LABELREAD);
             break;
         case IDC_BTN_WRITELABEL:
-            run_single(OP_LABELWRITE);
+            run_single(OP_COPY);   /* 专职复制：成功绿 Copy Complete! / 失败红 Copy Failure! */
             break;
         case IDC_BTN_CONFIG:
             open_config_dialog();
@@ -899,10 +912,16 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
     }
-    case WM_APP_VERDICT:
-        set_verdict((wchar_t*)lp);
-        free((void*)lp);
+    case WM_APP_VERDICT: {
+        /* wparam: 0=PASS/FAIL 逻辑配色；1=绿色文本；2=红色文本 */
+        wchar_t* s = (wchar_t*)lp;
+        if (!s) return 0;
+        if (wp == 1)      set_verdict_colored(s, RGB(0, 150, 0));
+        else if (wp == 2) set_verdict_colored(s, RGB(200, 0, 0));
+        else              set_verdict(s);
+        free(s);
         return 0;
+    }
     case WM_APP_FILECONTENT:
         SetWindowTextW(g_hfile, (wchar_t*)lp ? (wchar_t*)lp : L"");
         free((void*)lp);
