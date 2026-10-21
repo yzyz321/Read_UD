@@ -250,10 +250,10 @@ static void set_verdict(const wchar_t* v)
         set_text_color(g_hverdict, L"FAIL", RGB(200, 0, 0));
 }
 
-/* 监控状态行：标题黑 + 副行蓝（副行空则清空） */
-static void set_monstatus(const wchar_t* title, const wchar_t* sub)
+/* 监控状态行：标题按颜色显示（停止=红 / 开启=绿 / 命中=黑）+ 副行蓝 */
+static void set_monstatus(const wchar_t* title, const wchar_t* sub, COLORREF titlecol)
 {
-    SetWindowTextW(g_hmonstatus, title ? title : L"");
+    set_text_color(g_hmonstatus, title ? title : L"", titlecol);
     if (sub && sub[0])
         set_text_color(g_hmonfile, sub, RGB(0, 90, 200));
     else
@@ -451,10 +451,13 @@ static void layout(void)
                W - 2 * m - half - dpi_scale(6), cmdh, TRUE);
     y += cmdh + dpi_scale(4);
 
-    /* 底部监控窗格（PANE_BOTTOM）：判定徽标 + 状态行 → 命中文件行 → 内容区 → 按钮行 */
+    /* 底部监控窗格（PANE_BOTTOM）：判定徽标 + 状态行/清屏 → 命中文件行 → 内容区 → 按钮行 */
     MoveWindow(g_hverdict, m, y, dpi_scale(70), rowh, TRUE);
+    int clr_w = dpi_scale(56);
     MoveWindow(g_hmonstatus, m + dpi_scale(78), y,
-               W - 2 * m - dpi_scale(78), rowh, TRUE);
+               W - 2 * m - dpi_scale(78) - clr_w - dpi_scale(6), rowh, TRUE);
+    MoveWindow(GetDlgItem(g_hmain, IDC_BTN_CLEARCMD),
+               W - m - clr_w, y, clr_w, rowh, TRUE);
     y += rowh + dpi_scale(2);
     MoveWindow(g_hmonfile, m, y, W - 2 * m, rowh, TRUE);
     y += rowh + dpi_scale(2);
@@ -704,11 +707,12 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         g_hprog = MKCTL(PROGRESS_CLASSW, 0, PBS_SMOOTH, IDC_PBAR_TASK, L"");
 
         /* 底部监控窗格 */
-        g_hmonstatus = MKCTL(L"STATIC", 0, SS_CENTER, IDC_STC_MONSTATUS, L"监控已停止");
+        g_hmonstatus = MKCTL(L"RICHEDIT50W", 0, ES_READONLY | ES_CENTER, IDC_STC_MONSTATUS, L"监控已停止");
         g_hmonfile = MKCTL(L"STATIC", 0, SS_CENTER, IDC_STC_MONFILE, L"");
         g_hmonbtn[0] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_MONSTART, L"开始监控");
         g_hmonbtn[1] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_MONSTOP, L"停止监控");
         g_hmonbtn[2] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_EXIT, L"退出");
+        MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_CLEARCMD, L"清屏");
         g_hcmd[0] = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
                           ES_MULTILINE | ES_READONLY | WS_VSCROLL, IDC_EDIT_ENGINE, L"");
         g_hcmd[1] = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
@@ -796,7 +800,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         case IDC_BTN_MONSTART:
             if (code == BN_CLICKED) {
                 InterlockedExchange(&g_monitoring, 1);
-                set_monstatus(L"监控已开启：等待插入可移动磁盘…", L"");
+                set_monstatus(L"监控已开启：等待插入可移动磁盘…", L"", RGB(0, 150, 0));
                 applog(CH_ENGINE, LOG_UI, L"[UI] 操作员开启监控（插盘自动执行当前机型任务）");
                 refresh_buttons();
             }
@@ -804,10 +808,17 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         case IDC_BTN_MONSTOP:
             if (code == BN_CLICKED) {
                 InterlockedExchange(&g_monitoring, 0);
-                InterlockedExchange(&g_stop, 1);   /* 同时停止进行中的任务 */
-                set_monstatus(L"监控已停止", L"");
-                applog(CH_ENGINE, LOG_UI, L"[UI] 操作员停止监控");
+                /* 仅在任务执行中才置停止标志；设备轮询/状态显示不受监控开关影响 */
+                if (g_running) InterlockedExchange(&g_stop, 1);
+                set_monstatus(L"监控已停止", L"", RGB(200, 0, 0));
+                applog(CH_ENGINE, LOG_UI, L"[UI] 操作员停止监控（设备检测仍持续显示插拔信息）");
                 refresh_buttons();
+            }
+            break;
+        case IDC_BTN_CLEARCMD:
+            if (code == BN_CLICKED) {
+                SetWindowTextW(g_hcmd[0], L"");
+                applog(CH_ENGINE, LOG_UI, L"[UI] CMD-A 已清屏");
             }
             break;
         case IDC_BTN_EXIT:
@@ -910,8 +921,8 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         wchar_t* s = (wchar_t*)lp;
         if (s) {
             wchar_t* nl = wcschr(s, L'\n');
-            if (nl) { *nl = 0; set_monstatus(s, nl + 1); }
-            else set_monstatus(s, L"");
+            if (nl) { *nl = 0; set_monstatus(s, nl + 1, RGB(60, 60, 60)); }
+            else set_monstatus(s, L"", RGB(60, 60, 60));
             free(s);
         }
         return 0;
@@ -1007,6 +1018,7 @@ int gui_run(HINSTANCE hInst, int nShow)
     UpdateWindow(h);
     layout();
     refresh_buttons();
+    set_monstatus(L"监控已停止", L"", RGB(200, 0, 0));   /* 初始状态：红色 */
 
     /* 快捷键默认不注册，由"快捷键使能"复选框控制 */
     if (g_hotkey_enabled) {

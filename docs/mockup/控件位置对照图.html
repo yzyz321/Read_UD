@@ -75,7 +75,8 @@
   <div class="pane"><span class="pane-label">PANE_BOTTOM 底部监控窗格</span>
     <div class="row">
       <div class="ctl" style="min-width:46px">PASS/FAIL<b>IDC_STC_READVERDICT 1501</b></div>
-      <div class="status" style="flex:1">监控状态行（监控已停止/监控已开启/文件已找到）<b>IDC_STC_MONSTATUS 1102</b></div>
+      <div class="status" style="flex:1"><span style="color:#d00">监控已停止（红）</span> / <span style="color:#090">监控已开启（绿）</span> / 文件已找到<b>IDC_STC_MONSTATUS 1102</b></div>
+      <div class="ctl">清屏<b>IDC_BTN_CLEARCMD 1014</b></div>
     </div>
     <div class="row"><div class="status" style="flex:1;color:#005ac8">找到文件: F:\readme.txt<b>IDC_STC_MONFILE 1103</b>（居中蓝色）</div></div>
     <div class="row"><div class="content" style="flex:1">读取内容显示区<b>IDC_EDIT_FILE 1502</b></div></div>
@@ -98,6 +99,9 @@
     <tr><td>IDC_STC_READVERDICT 判定</td><td>PASS=绿 / FAIL=红</td></tr>
     <tr><td>IDC_CHK_HOTKEY 快捷键使能</td><td>勾选=注册 T/C 全局热键；取消=注销（默认不勾选）</td></tr>
     <tr><td>IDC_COMBO_MODEL 机型下拉</td><td>显示 DISPLAYNAME；切换只影响后续任务（与轮询解耦）</td></tr>
+    <tr><td>IDC_STC_MONSTATUS 监控状态行</td><td>"监控已停止"=红色字；"监控已开启"=绿色字；"文件已找到"=黑色字（副行蓝色）</td></tr>
+    <tr><td>IDC_BTN_CLEARCMD 清屏</td><td>点击清空 CMD-A（IDC_EDIT_ENGINE）显示内容，文件日志不受影响</td></tr>
+    <tr><td>设备状态 IDC_STC_DEVICE</td><td>始终由 1s 轮询驱动显示插拔信息，不受监控开/关影响</td></tr>
   </table>
   <div class="note">※ 已废弃：IDC_STC_MODE（原"○ 待机/模式标记"），自 v1.0.0-alpha.3 起从界面移除。</div>
 </div>
