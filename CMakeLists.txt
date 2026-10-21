@@ -23,4 +23,9 @@ set(SRC
 add_executable(udisktools WIN32 ${SRC})
 target_link_libraries(udisktools PRIVATE user32 gdi32 shell32 comctl32)
 
+# wWinMain 入口（MinGW/Clang 需要 -municode）
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_link_options(udisktools PRIVATE -municode)
+endif()
+
 # Phase 1 起逐步加入：device.c ops.c ini.c pattern.c rule.c log.c md5.c util.c
