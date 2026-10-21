@@ -1,6 +1,8 @@
 # UdiskTools 软件规划书
 
-> 版本：v1.0 ｜ 日期：2026-10-21 ｜ 状态：定稿（待开发）
+> 版本：v1.0 ｜ 日期：2026-10-21 ｜ 状态：定稿，主体已实现（v1.0.0-alpha.1）
+> 实施状态：核心代码完成并编译通过（config/device/pattern/ops/gui/util/md5 8 模块），
+> 启动冒烟测试通过；待真盘验证各操作（read/write/format/rwtest）与多 DPI 档位验收。
 > 定位：Windows 可移动磁盘（U 盘）自动化操作工具 · C 语言全新开发
 
 ---
