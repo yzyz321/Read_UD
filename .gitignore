@@ -1,0 +1,26 @@
+# Build artifacts
+build/
+bin/
+obj/
+*.o
+*.obj
+*.exe
+*.out
+*.pdb
+*.ilk
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs and local runtime output
+logs/
+*.log
+!docs/**/*.log
+
+# OS
+Thumbs.db
+.DS_Store
