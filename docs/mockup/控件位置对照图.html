@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>UdiskTools 主窗口控件名称位置对照图</title>
+<style>
+  body{font-family:"Microsoft YaHei",sans-serif;background:#f4f4f4;margin:0;padding:24px;color:#222}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:#666;font-size:13px;margin-bottom:16px}
+  .frame{background:#fff;border:2px solid #555;border-radius:8px;max-width:960px;padding:10px 0}
+  .titlebar{margin:0 12px 8px;padding:6px 12px;background:#2b5797;color:#fff;border-radius:4px;font-size:14px}
+  .pane{margin:0 12px 10px;border:1.5px dashed #999;border-radius:6px;padding:8px;position:relative;background:#fafcff}
+  .pane-label{position:absolute;top:-10px;left:10px;background:#fff0;border:0;font-size:12px;font-weight:bold;color:#2b5797;background:#fff;padding:0 6px}
+  .row{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;margin:4px 0}
+  .ctl{border:1.5px solid #444;border-radius:4px;padding:5px 6px;text-align:center;font-size:12px;line-height:1.35;background:#fff;min-width:52px}
+  .ctl b{display:block;font-size:11px;color:#666;font-weight:normal;font-family:Consolas,monospace}
+  .combo{background:#fff;border:1.5px solid #444;border-radius:4px;padding:5px 6px;text-align:center;font-size:12px;min-width:130px}
+  .combo b{display:block;font-size:11px;color:#666;font-weight:normal;font-family:Consolas,monospace}
+  .btn-green{background:#009600;color:#fff}.btn-green b{color:#dff}
+  .btn-red{background:#d20000;color:#fff}.btn-red b{color:#fdd}
+  .btn-gray{background:#aaa;color:#fff}.btn-gray b{color:#fff}
+  .status{background:#f2f2f2;border:1.5px solid #444;border-radius:4px;padding:5px;text-align:center;font-size:12px}
+  .progress{flex:1;height:14px;border:1.5px solid #444;border-radius:8px;background:#fff;position:relative;overflow:hidden}
+  .progress i{position:absolute;left:0;top:0;bottom:0;width:35%;background:#2b5797}
+  .cmd{flex:1;background:#1e1e1e;color:#ddd;border-radius:4px;padding:6px 8px;font-family:Consolas,monospace;font-size:12px;min-height:74px}
+  .cmd .t{color:#7ec6ff;margin-bottom:4px;font-family:"Microsoft YaHei";font-size:12px}
+  .content{background:#fff;border:1.5px solid #444;border-radius:4px;padding:6px 8px;font-family:Consolas,monospace;font-size:12px;min-height:56px}
+  .legend{max-width:960px;margin:14px auto 0;background:#fff;border:1.5px solid #ccc;border-radius:8px;padding:12px 16px;font-size:13px}
+  .legend table{border-collapse:collapse;width:100%}
+  .legend td,.legend th{border:1px solid #ddd;padding:4px 8px;text-align:left;font-size:12px}
+  .legend th{background:#eef3fb}
+  .note{color:#a00;font-size:12px;margin-top:6px}
+</style>
+</head>
+<body>
+<h1>UdiskTools 主窗口（WND_MAIN）控件名称位置对照图</h1>
+<div class="sub">与 ui/resource.h 一一对应 ｜ 版本 v1.0.0-alpha.3 ｜ 热键：T=执行任务　C=执行任务（需勾选"快捷键使能"）</div>
+
+<div class="frame">
+  <div class="titlebar">U盘拷盘工具 v1.0.0 &nbsp;［出错时标题追加 [!]］ — 窗口类 <b>UDK_MAINCLASS</b></div>
+
+  <div class="pane"><span class="pane-label">PANE_TOP 顶部按钮行</span>
+    <div class="row">
+      <div class="combo">机型下拉（显示名）<b>IDC_COMBO_MODEL 1001</b></div>
+      <div class="ctl">开始<b>IDC_BTN_START 1002</b></div>
+      <div class="ctl">停止<b>IDC_BTN_STOP 1003</b></div>
+      <div class="ctl">格式化<b>IDC_BTN_FORMAT 1004</b></div>
+      <div class="ctl">读取标签<b>IDC_BTN_READLABEL 1005</b></div>
+      <div class="ctl">写入标签/升级<b>IDC_BTN_WRITELABEL 1006</b></div>
+      <div class="ctl">配置<b>IDC_BTN_CONFIG 1007</b></div>
+      <div class="ctl">☐窗口置顶<b>IDC_CHK_TOPMOST 1008</b></div>
+      <div class="ctl">☐快捷键使能<b>IDC_CHK_HOTKEY 1013</b></div>
+    </div>
+  </div>
+
+  <div class="pane"><span class="pane-label">PANE_LABEL 标签行 ／ PANE_STATUS 状态行</span>
+    <div class="row"><div class="status" style="flex:1">标签：<b>IDC_STC_LABEL 1101</b>（卷标/文件系统/序列号/容量）</div></div>
+    <div class="row">
+      <div class="status" style="flex:2">设备状态<b>IDC_STC_DEVICE 1201</b></div>
+      <div class="status" style="flex:1;color:#d00">✕ 出错徽标<b>IDC_STC_ERROR 1202</b></div>
+    </div>
+  </div>
+
+  <div class="pane"><span class="pane-label">PANE_TASK 进度条</span>
+    <div class="row"><div class="progress"><i></i></div><b style="font-size:11px;color:#666">IDC_PBAR_TASK 1301</b></div>
+  </div>
+
+  <div class="pane"><span class="pane-label">PANE_CMDS 双控制台（左右并排）</span>
+    <div class="row">
+      <div class="cmd"><div class="t">CMD-A 操作引擎输出 · IDC_EDIT_ENGINE 1401</div>[INFO] …<br>[OK] …<br>[ERR] …（红）</div>
+      <div class="cmd"><div class="t">CMD-B 标识生成输出 · IDC_EDIT_IDENT 1402</div>[IDENT] SN=…<br>[IDENT] MAC=…</div>
+    </div>
+  </div>
+
+  <div class="pane"><span class="pane-label">PANE_BOTTOM 底部监控窗格</span>
+    <div class="row">
+      <div class="ctl" style="min-width:46px">PASS/FAIL<b>IDC_STC_READVERDICT 1501</b></div>
+      <div class="status" style="flex:1">监控状态行（监控已停止/监控已开启/文件已找到）<b>IDC_STC_MONSTATUS 1102</b></div>
+    </div>
+    <div class="row"><div class="status" style="flex:1;color:#005ac8">找到文件: F:\readme.txt<b>IDC_STC_MONFILE 1103</b>（居中蓝色）</div></div>
+    <div class="row"><div class="content" style="flex:1">读取内容显示区<b>IDC_EDIT_FILE 1502</b></div></div>
+    <div class="row" style="justify-content:center">
+      <div class="ctl btn-green" style="min-width:88px">开始监控<b>IDC_BTN_MONSTART 1010</b></div>
+      <div class="ctl btn-red" style="min-width:88px">停止监控<b>IDC_BTN_MONSTOP 1011</b></div>
+      <div class="ctl btn-gray" style="min-width:88px">退出<b>IDC_BTN_EXIT 1012</b></div>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <b>颜色/状态约定</b>
+  <table>
+    <tr><th>控件</th><th>状态 → 外观</th></tr>
+    <tr><td>IDC_BTN_MONSTART 开始监控</td><td>监控关闭=绿色可用；监控中=浅灰禁用</td></tr>
+    <tr><td>IDC_BTN_MONSTOP 停止监控</td><td>监控中=红色可用；监控关闭=浅灰禁用（点击同时中止任务）</td></tr>
+    <tr><td>IDC_BTN_EXIT 退出</td><td>常灰可用；任务运行中退出需确认</td></tr>
+    <tr><td>IDC_STC_ERROR 出错徽标</td><td>出错=红字"✕ 出错：原因"+标题加[!]；成功/确认后熄灭</td></tr>
+    <tr><td>IDC_STC_READVERDICT 判定</td><td>PASS=绿 / FAIL=红</td></tr>
+    <tr><td>IDC_CHK_HOTKEY 快捷键使能</td><td>勾选=注册 T/C 全局热键；取消=注销（默认不勾选）</td></tr>
+    <tr><td>IDC_COMBO_MODEL 机型下拉</td><td>显示 DISPLAYNAME；切换只影响后续任务（与轮询解耦）</td></tr>
+  </table>
+  <div class="note">※ 已废弃：IDC_STC_MODE（原"○ 待机/模式标记"），自 v1.0.0-alpha.3 起从界面移除。</div>
+</div>
+</body>
+</html>

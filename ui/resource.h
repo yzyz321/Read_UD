@@ -10,6 +10,7 @@
 #define WND_CONFIG          101
 
 /* ---------- PANE_TOP ---------- */
+/* ---------- PANE_TOP ---------- */
 #define IDC_COMBO_MODEL     1001   /* 机型下拉框（显示 DISPLAYNAME）            */
 #define IDC_BTN_START       1002   /* 开始（默认名，可被 BTN_START 覆盖显示）   */
 #define IDC_BTN_STOP        1003   /* 停止                                     */
@@ -18,7 +19,8 @@
 #define IDC_BTN_WRITELABEL  1006   /* 写入标签（机型可覆盖显示名，如"升级"）    */
 #define IDC_BTN_CONFIG      1007   /* 配置 → WND_CONFIG                        */
 #define IDC_CHK_TOPMOST     1008   /* 窗口置顶复选框 HWND_TOPMOST/NOTOPMOST    */
-#define IDC_STC_MODE        1009   /* 手动/自动模式标记                        */
+#define IDC_CHK_HOTKEY      1013   /* 快捷键使能复选框（T/C 全局热键开关）     */
+/* 已废弃：IDC_STC_MODE（原"待机/模式标记"，v1.0.0-alpha.3 起取消） */
 
 /* ---------- PANE_BOTTOM 监控窗格（底部） ---------- */
 #define IDC_BTN_MONSTART    1010   /* 开始监控（监控关闭时绿色，开启后置灰）   */

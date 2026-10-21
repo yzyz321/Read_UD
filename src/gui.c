@@ -24,9 +24,11 @@ volatile LONG g_running = 0;
 
 static HINSTANCE g_hinst = NULL;
 static HWND g_hmain = NULL;
-static HWND g_hmodel = NULL, g_hmode = NULL, g_hlabel = NULL, g_hdev = NULL,
+static HWND g_hmodel = NULL, g_hlabel = NULL, g_hdev = NULL,
             g_herr = NULL, g_hprog = NULL, g_hcmd[2] = { NULL, NULL },
-            g_hverdict = NULL, g_hfile = NULL, g_hchk_top = NULL;
+            g_hverdict = NULL, g_hfile = NULL, g_hchk_top = NULL,
+            g_hchk_hotkey = NULL;
+static BOOL g_hotkey_enabled = FALSE;   /* 快捷键使能（IDC_CHK_HOTKEY） */
 static HFONT g_font = NULL, g_font_mono = NULL;
 static UINT g_dpi = 96;
 static DWORD g_dev_mask = 0;
@@ -201,24 +203,6 @@ static void refresh_buttons(void)
         if (g_hmonbtn[i]) InvalidateRect(g_hmonbtn[i], NULL, TRUE);
 }
 
-static void set_mode_badge(int trigger)
-{
-    HWND h = g_hmode;
-    CHARFORMAT2W cf;
-    memset(&cf, 0, sizeof(cf));
-    cf.cbSize = sizeof(cf);
-    cf.dwMask = CFM_COLOR | CFM_BOLD;
-    cf.dwEffects = CFE_BOLD;
-    if (trigger == TRIGGER_AUTO) {
-        SetWindowTextW(h, L"● 自动模式");
-        cf.crTextColor = RGB(0, 130, 0);
-    } else {
-        SetWindowTextW(h, L"● 手动模式");
-        cf.crTextColor = RGB(0, 90, 200);
-    }
-    SendMessageW(h, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
-}
-
 static void set_error_badge(BOOL on, const wchar_t* msg)
 {
     HWND h = g_herr;
@@ -312,7 +296,6 @@ static DWORD WINAPI task_thread(LPVOID p)
     CFGMODEL* m = &g_cfg.models[a->model_index];
     wchar_t drv = a->drive;
 
-    PostMessageW(g_hmain, WM_APP_MODE, a->trigger, 0);
     applog(CH_ENGINE, LOG_UI, L"=== 任务开始：%s（%s，盘 %c:） v%s ===",
            m->display, a->trigger == TRIGGER_AUTO ? L"自动" : L"手动",
            drv, g_cfg.version);
@@ -423,12 +406,14 @@ static void layout(void)
     int rowh = dpi_scale(26);
     int y = m;
 
-    /* PANE_TOP：机型下拉 + 按钮行 */
-    MoveWindow(g_hmodel, m, y, dpi_scale(220), rowh, TRUE);
-    int x = m + dpi_scale(226);
+    /* PANE_TOP：机型下拉 + 按钮行 + 复选框
+     * 注意：COMBO 的 MoveWindow 高度是"含下拉列表"的总高度，
+     *       必须给足高度，否则下拉列表被压没（表现为下拉不起作用） */
+    MoveWindow(g_hmodel, m, y, dpi_scale(200), dpi_scale(180), TRUE);
+    int x = m + dpi_scale(206);
     struct { int id; int w; } btns[] = {
-        { IDC_BTN_START, 70 }, { IDC_BTN_STOP, 60 }, { IDC_BTN_FORMAT, 70 },
-        { IDC_BTN_READLABEL, 80 }, { IDC_BTN_WRITELABEL, 80 },
+        { IDC_BTN_START, 66 }, { IDC_BTN_STOP, 56 }, { IDC_BTN_FORMAT, 66 },
+        { IDC_BTN_READLABEL, 76 }, { IDC_BTN_WRITELABEL, 76 },
     };
     for (int i = 0; i < 5; i++) {
         HWND hb = GetDlgItem(g_hmain, btns[i].id);
@@ -436,11 +421,12 @@ static void layout(void)
         MoveWindow(hb, x, y, bw, rowh, TRUE);
         x += bw + dpi_scale(4);
     }
-    MoveWindow(GetDlgItem(g_hmain, IDC_BTN_CONFIG), x, y, dpi_scale(60), rowh, TRUE);
-    x += dpi_scale(66);
-    MoveWindow(g_hchk_top, x, y, dpi_scale(86), rowh, TRUE);
-    x += dpi_scale(90);
-    MoveWindow(g_hmode, x, y, dpi_scale(110), rowh, TRUE);
+    MoveWindow(GetDlgItem(g_hmain, IDC_BTN_CONFIG), x, y, dpi_scale(56), rowh, TRUE);
+    x += dpi_scale(62);
+    MoveWindow(g_hchk_top, x, y, dpi_scale(80), rowh, TRUE);
+    x += dpi_scale(84);
+    MoveWindow(g_hchk_hotkey, x, y, dpi_scale(96), rowh, TRUE);
+    x += dpi_scale(100);
 
     y += rowh + dpi_scale(4);
     /* PANE_LABEL / PANE_STATUS（设备状态 + 出错徽标） */
@@ -704,7 +690,6 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             CreateWindowExW(ex, cls, txt, WS_CHILD | WS_VISIBLE | (style), \
                             0, 0, 10, 10, h, (HMENU)(INT_PTR)(id), g_hinst, NULL)
         g_hmodel = MKCTL(L"COMBOBOX", 0, CBS_DROPDOWNLIST | WS_VSCROLL, IDC_COMBO_MODEL, L"");
-        g_hmode  = MKCTL(L"RICHEDIT50W", 0, ES_READONLY, IDC_STC_MODE, L"○ 待机");
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_START, L"开始");
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_STOP, L"停止");
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_FORMAT, L"格式化");
@@ -712,6 +697,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_WRITELABEL, L"写入标签");
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_CONFIG, L"配置");
         g_hchk_top = MKCTL(L"BUTTON", 0, BS_AUTOCHECKBOX, IDC_CHK_TOPMOST, L"窗口置顶");
+        g_hchk_hotkey = MKCTL(L"BUTTON", 0, BS_AUTOCHECKBOX, IDC_CHK_HOTKEY, L"快捷键使能");
         g_hlabel = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_LABEL, L"标签：");
         g_hdev = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_DEVICE, L"设备状态：检测中…");
         g_herr = MKCTL(L"RICHEDIT50W", 0, ES_READONLY, IDC_STC_ERROR, L"");
@@ -836,6 +822,21 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                        on ? L"开启" : L"关闭", on ? L"HWND_TOPMOST" : L"HWND_NOTOPMOST");
             }
             break;
+        case IDC_CHK_HOTKEY:
+            if (code == BN_CLICKED) {
+                BOOL on = SendMessageW(g_hchk_hotkey, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                if (on) {
+                    RegisterHotKey(h, ID_HOTKEY_T, 0, 'T');
+                    RegisterHotKey(h, ID_HOTKEY_C, 0, 'C');
+                } else {
+                    UnregisterHotKey(h, ID_HOTKEY_T);
+                    UnregisterHotKey(h, ID_HOTKEY_C);
+                }
+                g_hotkey_enabled = on;
+                applog(CH_ENGINE, LOG_UI, L"[UI] 快捷键使能 %s（T/C 全局热键%s）",
+                       on ? L"开启" : L"关闭", on ? L"已注册" : L"已注销");
+            }
+            break;
         }
         return 0;
     }
@@ -903,7 +904,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         free((void*)lp);
         return 0;
     case WM_APP_MODE:
-        set_mode_badge((int)wp);
+        /* 已废弃（待机/模式标记取消），保留消息号兼容 */
         return 0;
     case WM_APP_MONINFO: {
         wchar_t* s = (wchar_t*)lp;
@@ -1007,9 +1008,11 @@ int gui_run(HINSTANCE hInst, int nShow)
     layout();
     refresh_buttons();
 
-    /* 全局热键 T / C */
-    RegisterHotKey(h, ID_HOTKEY_T, 0, 'T');
-    RegisterHotKey(h, ID_HOTKEY_C, 0, 'C');
+    /* 快捷键默认不注册，由"快捷键使能"复选框控制 */
+    if (g_hotkey_enabled) {
+        RegisterHotKey(h, ID_HOTKEY_T, 0, 'T');
+        RegisterHotKey(h, ID_HOTKEY_C, 0, 'C');
+    }
 
     applog(CH_ENGINE, LOG_UI, L"[SYS] %s v%s 启动（ini：%s）",
            g_cfg.title, g_cfg.version, g_ini_path);
