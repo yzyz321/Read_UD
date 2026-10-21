@@ -49,5 +49,8 @@
 #define IDC_BTN_SAVECFG     3004   /* 保存                                     */
 #define IDC_BTN_CLOSECFG    3005   /* 关闭                                     */
 #define IDC_STC_CFGSTATE    3006   /* 只读/已解锁状态                          */
+#define IDC_EDIT_CFGTEXT    3007   /* 配置内容展示（只读）                     */
+#define IDC_EDIT_CFGKEY     3008   /* 待修改键名（解锁后可用）                 */
+#define IDC_EDIT_CFGVAL     3009   /* 待修改键新值（解锁后可用）               */
 
 #endif /* RESOURCE_H */
