@@ -139,7 +139,7 @@
     <tr><td>IDC_COMBO_MODEL 机型下拉</td><td>显示 DISPLAYNAME；切换只影响后续任务（与轮询解耦）</td></tr>
     <tr><td>IDC_STC_MONSTATUS 监控状态行</td><td>"监控已停止"=红色字；"监控已开启"=绿色字；"文件已找到"=黑色字（副行蓝色）</td></tr>
     <tr><td>IDC_BTN_CLEARCMD 清屏</td><td>点击清空 CMD-A（IDC_EDIT_ENGINE）显示内容，文件日志不受影响</td></tr>
-    <tr><td>IDC_STC_AUTOMODE 状态标记</td><td>AUTO=绿色（监控开启/自动触发）；MANUAL=蓝色（手动操作/监控停止）</td></tr>
+    <tr><td>IDC_STC_AUTOMODE 状态标记</td><td><b>AUTO</b>=绿色（[开始监控]已开启 或 本机型 AUTORUN=1 → 插盘自动执行）；<b>MANUAL</b>=蓝色（两者皆无，须手动点按钮）。由监控开关/AUTORUN 统一推导，手动点按钮<b>不会</b>把它改成 MANUAL；AUTO_COPY/AUTO_TEST 只决定自动流程内做哪几步，不参与本判定。模式变化写日志：如"运行模式 AUTO（监控已开启）"</td></tr>
     <tr><td>IDC_STC_SRCPATH 状态行</td><td>显示当前机型 SRCPATH 配置值；切换机型/保存配置后立即刷新</td></tr>
     <tr><td>配置窗口键值编辑</td><td>键名用下拉选择（IDC_CFG_COMBO_KEY 3011）；枚举键值（ENABLE_*、AUTO_*、WRITEMODE、MATCH_POLICY、READPATTERN、FILESYSTEM、HASH、CONFIRM、AUTORUN）显示为下拉框 IDC_CFG_COMBO_VAL 3012；其余键（SRCPATH、DSTPATH、READFILE、READRULE、VOLUME 等）用输入框 IDC_EDIT_CFGVAL 3009</td></tr>
     <tr><td>设备状态 IDC_STC_DEVICE</td><td>粗体显示；始终由 1s 轮询驱动显示插拔信息，不受监控开/关影响</td></tr>
