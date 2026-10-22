@@ -568,8 +568,42 @@ static void layout(void)
 static BOOL g_cfg_unlocked = FALSE;
 static HWND g_hcfg = NULL, g_hcfglist = NULL, g_hcfgtext = NULL, g_hcfgpass = NULL,
             g_hcfgstate = NULL, g_hcfgkey = NULL, g_hcfgval = NULL,
-            g_hcfgvalcombo = NULL;
+            g_hcfgvalcombo = NULL, g_hcfghint = NULL;
 static int g_cfg_failcount = 0;
+
+/* 键的简要说明（配置窗口提示行） */
+static const wchar_t* key_hint(const wchar_t* key)
+{
+    static const struct { const wchar_t* k; const wchar_t* h; } tbl[] = {
+        { L"ENABLE_READ",     L"读取开关：1=允许读取（读取校验按钮可用、自动流程执行判定）；0=禁用并置灰" },
+        { L"ENABLE_WRITE",    L"写入开关：1=允许复制文件（复制按钮可用）；0=禁用并置灰" },
+        { L"ENABLE_FORMAT",   L"格式化开关：1=格式化按钮可用；0=禁用并置灰（自动流程永不格式化）" },
+        { L"ENABLE_USBINFO",  L"USB 识别开关：1=识别 USB2.0/3.x 通讯模式并输出到 CMD-A；0=跳过" },
+        { L"AUTO_COPY",       L"自动复制：1=插盘自动流程内复制（需 AUTORUN=1 或开启监控）；0=只手动点[复制]" },
+        { L"AUTO_TEST",       L"自动测试：1=插盘自动流程内执行读写测试；0=只手动点[读写测试]" },
+        { L"AUTORUN",         L"插盘自动执行：1=插入U盘立即执行整任务；0=需先点[开始监控]" },
+        { L"WRITEMODE",       L"写入方式：COPY=简单复制（推荐）；PROCESSED=按台生成不同文件（后续版本）" },
+        { L"SRCPATH",         L"复制源：绝对路径或相对路径（相对=exe 同目录），支持 * 与 ? 通配符" },
+        { L"DSTPATH",         L"U盘内目标目录：目录不存在时自动逐级建立；\\ 表示U盘根目录" },
+        { L"READFILE",        L"读取文件名：U盘根目录，支持通配符，如 8685????.txt；留空=跳过读取" },
+        { L"MATCH_POLICY",    L"多命中取舍：NEWEST=取最新 / FIRST=第一个 / STRICT=多命中判失败并列出" },
+        { L"READPATTERN",     L"匹配方式：WILDCARD=通配符（推荐）；REGEX=正则（后续版本支持）" },
+        { L"READRULE",        L"判定规则（分号分隔）：MUST_CONTAIN:关键字 ; MIN_LEN:最小长度；PASS 才显示内容" },
+        { L"CONFIRM",         L"格式化确认：1=格式化前弹窗二次确认（建议保持 1）" },
+        { L"FILESYSTEM",      L"格式化文件系统：FAT32（≤32GB/单文件≤4GB）或 EXFAT（大容量推荐）" },
+        { L"VOLUME",          L"卷标：仅格式化完成后写入；留空=不改卷标（FAT32 卷标最长 11 字符）" },
+        { L"HASH",            L"复制校验算法：md5（复制前后比对，不一致判失败）" },
+        { L"ADMINPASS",       L"配置解锁密码（明文存放，仅用于防误改；留空=禁止解锁编辑）" },
+        { L"PRJNUM",          L"机型编号：程序内部映射用，改动会导致配置识别不到该机型" },
+        { L"TITLE",           L"主窗口标题文字（仅影响显示，不影响功能）" },
+        { L"VERSION",         L"配置版本标记（仅作记录，不参与程序逻辑）" },
+    };
+    for (size_t i = 0; i < sizeof(tbl) / sizeof(tbl[0]); i++)
+        if (_wcsicmp(key, tbl[i].k) == 0) return tbl[i].h;
+    if (_wcsnicmp(key, L"BTN_", 4) == 0)
+        return L"按钮显示名：仅修改界面文字（如“写入标签”→复制、升级），不影响功能与日志";
+    return L"（该键暂无说明，请参考 docs/配置文件使用手册.md）";
+}
 
 /* ---------- 配置项控件类型判定：枚举键用下拉框，其余用输入框 ---------- */
 
@@ -619,6 +653,7 @@ static void cfg_sync_value_editor(void)
 
     wchar_t key[CFG_KEY_LEN];
     SendMessageW(g_hcfgkey, CB_GETLBTEXT, ki, (LPARAM)key);
+    SetWindowTextW(g_hcfghint, key_hint(key));   /* 键值说明提示 */
     CFGMODEL* m = &g_cfg.models[mi];
     const wchar_t* cur = cfg_get(m, key);
     if (!cur) cur = L"";
@@ -757,6 +792,11 @@ static void cfg_create_controls(HWND h)
     CFGCOMBO(IDC_CFG_COMBO_VAL, m + dpi_scale(165), y, dpi_scale(320), rowh + dpi_scale(150));
     y += rowh + dpi_scale(4);
 
+    /* 键值说明提示（选中键后自动显示） */
+    CFGSTC(0, L"说明：", m, y + dpi_scale(4), dpi_scale(50), rowh);
+    CFGSTC(IDC_STC_CFGHINT, L"", m + dpi_scale(52), y, dpi_scale(448), rowh * 2);
+    y += rowh * 2 + dpi_scale(6);
+
     /* 按钮行：解锁编辑 + 密码框（点击解锁后才显示） + 保存 + 恢复默认 */
     CFGBTN(IDC_BTN_UNLOCK, L"解锁编辑", m, y, dpi_scale(90), rowh);
     CFGEDIT(IDC_CFG_EDIT_PASS, m + dpi_scale(100), y, dpi_scale(140), rowh,
@@ -792,6 +832,7 @@ static LRESULT CALLBACK cfg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         g_hcfgkey = GetDlgItem(h, IDC_CFG_COMBO_KEY);
         g_hcfgval = GetDlgItem(h, IDC_EDIT_CFGVAL);
         g_hcfgvalcombo = GetDlgItem(h, IDC_CFG_COMBO_VAL);
+        g_hcfghint = GetDlgItem(h, IDC_STC_CFGHINT);
         for (int i = 0; i < g_cfg.nmodels; i++)
             SendMessageW(g_hcfglist, LB_ADDSTRING, 0, (LPARAM)g_cfg.models[i].display);
         SendMessageW(g_hcfglist, LB_SETCURSEL, 0, 0);
@@ -930,7 +971,7 @@ static void open_config_dialog(void)
     if (g_hcfg && IsWindow(g_hcfg)) { SetForegroundWindow(g_hcfg); return; }
     g_cfg_unlocked = FALSE;
     g_cfg_failcount = 0;
-    int w = dpi_scale(540), hgt = dpi_scale(560);
+    int w = dpi_scale(540), hgt = dpi_scale(620);
     CreateWindowExW(WS_EX_DLGMODALFRAME, L"UDK_CFGCLASS",
                     L"配置（只读，解锁后可编辑）",
                     (WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX) | WS_VISIBLE,
