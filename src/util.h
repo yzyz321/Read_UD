@@ -32,6 +32,9 @@ wchar_t* exe_dir(void);
 /* 组合路径：dir + "\\" + name（dir 可为空） */
 void path_join(wchar_t* out, size_t outlen, const wchar_t* dir, const wchar_t* name);
 
+/* 递归创建目录链（已存在不报错）；返回最终目录是否存在 */
+BOOL util_ensure_dirs(const wchar_t* path);
+
 /* ---------- 日志 ---------- */
 /* 任何线程均可调用；通过消息转发到 GUI 控制台并同步写文件日志（强制输出） */
 void applog(int channel, LOGLEVEL lv, const wchar_t* fmt, ...);

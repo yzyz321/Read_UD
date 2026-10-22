@@ -93,6 +93,31 @@ void path_join(wchar_t* out, size_t outlen, const wchar_t* dir, const wchar_t* n
     out[outlen - 1] = 0;
 }
 
+/* 递归创建目录链：逐级 CreateDirectoryW，已存在忽略 */
+BOOL util_ensure_dirs(const wchar_t* path)
+{
+    wchar_t tmp[MAX_PATH];
+    lstrcpynW(tmp, path, MAX_PATH);
+    size_t n = wcslen(tmp);
+    while (n > 0 && (tmp[n - 1] == L'\\')) tmp[--n] = 0;   /* 去尾部反斜杠 */
+    if (n < 3) return TRUE;                                /* 盘符根目录视为存在 */
+
+    for (size_t i = 3; i <= n; i++) {                      /* 跳过 "X:\" */
+        if (tmp[i] == L'\\' || tmp[i] == 0) {
+            wchar_t save = tmp[i];
+            tmp[i] = 0;
+            if (!CreateDirectoryW(tmp, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+                /* 目录被文件占用等情况：再探测一次 */
+                DWORD attr = GetFileAttributesW(tmp);
+                if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY))
+                    return FALSE;
+            }
+            tmp[i] = save;
+        }
+    }
+    return TRUE;
+}
+
 /* ================= 日志 ================= */
 
 static HWND g_hwndGui = NULL;           /* 主窗口（接收 WM_APP_LOG） */

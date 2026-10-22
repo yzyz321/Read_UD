@@ -62,5 +62,6 @@
 #define IDC_EDIT_CFGTEXT    3007   /* 配置内容展示（只读）                     */
 #define IDC_EDIT_CFGKEY     3008   /* 待修改键名（解锁后可用）                 */
 #define IDC_EDIT_CFGVAL     3009   /* 待修改键新值（解锁后可用）               */
+#define IDC_BTN_RESETCFG    3010   /* 恢复默认设置（内嵌出厂 ini 覆盖+确认）   */
 
 #endif /* RESOURCE_H */

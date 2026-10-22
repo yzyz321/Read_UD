@@ -142,6 +142,12 @@ int op_write(const CFGMODEL* m, wchar_t drive)
 
     applog(CH_ENGINE, LOG_INFO, L"[%s] 开始写入：%s → %c:\\%s", OP, srcpat, drive, dp);
 
+    /* 目标目录不存在则自动建立（支持多级） */
+    if (!util_ensure_dirs(dstdir)) {
+        fail(OP, L"无法创建目标目录：%s", dstdir);
+        return 1;
+    }
+
     WIN32_FIND_DATAW fd;
     wchar_t findpat[MAX_PATH];
     path_join(findpat, MAX_PATH, dir, fname);
@@ -170,6 +176,10 @@ int op_write(const CFGMODEL* m, wchar_t drive)
         wchar_t srcfile[MAX_PATH], dstfile[MAX_PATH];
         path_join(srcfile, MAX_PATH, dir, fd.cFileName);
         path_join(dstfile, MAX_PATH, dstdir, fd.cFileName);
+
+        /* 目标已存在则覆盖（CopyFileW 第二参数 FALSE 即覆盖） */
+        if (GetFileAttributesW(dstfile) != INVALID_FILE_ATTRIBUTES)
+            applog(CH_ENGINE, LOG_INFO, L"[%s] %s 已存在，覆盖", OP, fd.cFileName);
 
         if (copy_one_file(srcfile, dstfile)) {
             n_ok++;

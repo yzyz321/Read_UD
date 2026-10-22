@@ -16,6 +16,7 @@
 #include "device.h"
 #include "ops.h"
 #include "version.h"
+#include "default_ini.h"
 
 /* ---------- 全局 ---------- */
 CONFIG g_cfg;
@@ -533,6 +534,40 @@ static void cfg_apply_lock(void)
     SetWindowTextW(g_hcfgstate, g_cfg_unlocked ? L"状态：已解锁（可编辑保存）" : L"状态：只读（未授权）");
 }
 
+/* 从磁盘重载配置并刷新主界面（机型下拉/按钮状态） */
+static BOOL reload_config_and_ui(void)
+{
+    wchar_t cur_internal[CFG_KEY_LEN];
+    lstrcpynW(cur_internal, g_cfg.models[g_cur_model].internal, CFG_KEY_LEN);
+    CONFIG newcfg;
+    if (!cfg_load(g_ini_path, &newcfg)) return FALSE;
+    g_cfg = newcfg;
+    int newsel = 0;
+    SendMessageW(g_hmodel, CB_RESETCONTENT, 0, 0);
+    for (int i = 0; i < g_cfg.nmodels; i++) {
+        SendMessageW(g_hmodel, CB_ADDSTRING, 0, (LPARAM)g_cfg.models[i].display);
+        if (_wcsicmp(g_cfg.models[i].internal, cur_internal) == 0) newsel = i;
+    }
+    g_cur_model = newsel;
+    SendMessageW(g_hmodel, CB_SETCURSEL, newsel, 0);
+    refresh_buttons();
+    return TRUE;
+}
+
+/* 用内嵌出厂默认配置覆盖 ini */
+static BOOL write_default_ini(void)
+{
+    HANDLE h = CreateFileW(g_ini_path, GENERIC_WRITE, 0, NULL,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    DWORD w = 0;
+    static const char bom[3] = { (char)0xEF, (char)0xBB, (char)0xBF };
+    WriteFile(h, bom, 3, &w, NULL);
+    WriteFile(h, DEFAULT_INI_UTF8, (DWORD)strlen(DEFAULT_INI_UTF8), &w, NULL);
+    CloseHandle(h);
+    return TRUE;
+}
+
 static void cfg_create_controls(HWND h)
 {
     int m = dpi_scale(10), rowh = dpi_scale(24), y = m;
@@ -549,7 +584,7 @@ static void cfg_create_controls(HWND h)
         SendMessageW(hc, WM_SETFONT, (WPARAM)f, TRUE); } while (0)
     #define CFGEDIT(id, x2, y2, w2, h2, style) do { \
         HWND hc = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", NULL, \
-                    WS_CHILD | WS_VISIBLE | (style), x2, y2, w2, h2, \
+                    WS_CHILD | (style), x2, y2, w2, h2, \
                     h, (HMENU)(INT_PTR)(id), g_hinst, NULL); \
         SendMessageW(hc, WM_SETFONT, (WPARAM)f, TRUE); } while (0)
     #define CFGBTN(id, txt, x2, y2, w2, h2) do { \
@@ -569,19 +604,20 @@ static void cfg_create_controls(HWND h)
     CFGEDIT(IDC_EDIT_CFGVAL, m + dpi_scale(165), y, dpi_scale(320), rowh, ES_AUTOHSCROLL);
     y += rowh + dpi_scale(4);
 
+    /* 按钮行：解锁编辑 + 密码框（点击解锁后才显示） + 保存 + 恢复默认 */
     CFGBTN(IDC_BTN_UNLOCK, L"解锁编辑", m, y, dpi_scale(90), rowh);
-    CFGSTC(0, L"密码：", m + dpi_scale(100), y + dpi_scale(4), dpi_scale(60), rowh);
-    CFGEDIT(IDC_CFG_EDIT_PASS, m + dpi_scale(160), y, dpi_scale(140), rowh,
-            ES_PASSWORD | ES_AUTOHSCROLL);
-    CFGBTN(IDC_BTN_SAVECFG, L"保存修改", m + dpi_scale(320), y, dpi_scale(90), rowh);
-    CFGBTN(IDC_BTN_CLOSECFG, L"关闭", m + dpi_scale(418), y, dpi_scale(60), rowh);
-    y += rowh + dpi_scale(8);
+    CFGEDIT(IDC_CFG_EDIT_PASS, m + dpi_scale(100), y, dpi_scale(140), rowh,
+            ES_PASSWORD | ES_AUTOHSCROLL);          /* 初始隐藏，点解锁后显示 */
+    CFGBTN(IDC_BTN_SAVECFG, L"保存修改", m + dpi_scale(250), y, dpi_scale(90), rowh);
+    CFGBTN(IDC_BTN_RESETCFG, L"恢复默认设置", m + dpi_scale(350), y, dpi_scale(110), rowh);
+    y += rowh + dpi_scale(4);
     CFGSTC(IDC_STC_CFGSTATE, L"状态：只读（未授权）", m, y, dpi_scale(320), rowh);
+    CFGBTN(IDC_BTN_CLOSECFG, L"关闭", m + dpi_scale(440), y, dpi_scale(60), rowh);
     y += rowh + dpi_scale(8);
 
     CFGSTC(0, L"配置内容：", m, y, dpi_scale(120), rowh);
     y += rowh;
-    CFGEDIT(IDC_EDIT_CFGTEXT, m, y, dpi_scale(500), dpi_scale(260),
+    CFGEDIT(IDC_EDIT_CFGTEXT, m, y, dpi_scale(500), dpi_scale(250),
             ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY);
     #undef CFGSTC
     #undef CFGLIST
@@ -606,6 +642,9 @@ static LRESULT CALLBACK cfg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         SendMessageW(g_hcfglist, LB_SETCURSEL, 0, 0);
         cfg_show_model();
         cfg_apply_lock();
+        /* 密码输入框：平时隐藏且禁用，点击"解锁编辑"后才显示 */
+        ShowWindow(g_hcfgpass, SW_HIDE);
+        EnableWindow(g_hcfgpass, FALSE);
         return 0;
 
     case WM_COMMAND:
@@ -614,15 +653,30 @@ static LRESULT CALLBACK cfg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             if (HIWORD(wp) == LBN_SELCHANGE) cfg_show_model();
             break;
         case IDC_BTN_UNLOCK: {
+            /* 两步式：第一次点击显示密码框；输入密码后再次点击校验 */
+            if (!IsWindowVisible(g_hcfgpass)) {
+                if (!g_cfg.adminpass[0]) {
+                    MessageBoxW(h, L"ini 未设置管理员密码（ADMINPASS），暂不支持解锁编辑。",
+                                L"提示", MB_OK | MB_ICONINFORMATION);
+                    break;
+                }
+                ShowWindow(g_hcfgpass, SW_SHOW);
+                EnableWindow(g_hcfgpass, TRUE);
+                SetWindowTextW(g_hcfgpass, L"");
+                SetFocus(g_hcfgpass);
+                SetWindowTextW(GetDlgItem(h, IDC_BTN_UNLOCK), L"确认解锁");
+                break;
+            }
             wchar_t pass[CFG_VAL_LEN];
             GetWindowTextW(g_hcfgpass, pass, CFG_VAL_LEN);
-            if (!g_cfg.adminpass[0]) {
-                MessageBoxW(h, L"ini 未设置管理员密码（ADMINPASS），暂不支持解锁编辑。",
-                            L"提示", MB_OK | MB_ICONINFORMATION);
-            } else if (wcscmp(pass, g_cfg.adminpass) == 0) {
+            if (wcscmp(pass, g_cfg.adminpass) == 0) {
                 g_cfg_unlocked = TRUE;
                 g_cfg_failcount = 0;
                 cfg_apply_lock();
+                /* 恢复密码框隐藏 */
+                ShowWindow(g_hcfgpass, SW_HIDE);
+                EnableWindow(g_hcfgpass, FALSE);
+                SetWindowTextW(GetDlgItem(h, IDC_BTN_UNLOCK), L"解锁编辑");
                 applog(CH_ENGINE, LOG_UI, L"[CFG] 配置窗口已解锁编辑");
             } else {
                 g_cfg_failcount++;
@@ -630,8 +684,10 @@ static LRESULT CALLBACK cfg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                 _snwprintf(msgb, 128, L"密码错误（第 %d 次，连续 3 次锁定）", g_cfg_failcount);
                 MessageBoxW(h, msgb, L"解锁失败", MB_OK | MB_ICONWARNING);
                 if (g_cfg_failcount >= 3) {
+                    ShowWindow(g_hcfgpass, SW_HIDE);
                     EnableWindow(g_hcfgpass, FALSE);
                     EnableWindow(GetDlgItem(h, IDC_BTN_UNLOCK), FALSE);
+                    SetWindowTextW(GetDlgItem(h, IDC_BTN_UNLOCK), L"解锁编辑");
                     MessageBoxW(h, L"连续 3 次密码错误，密码输入已锁定。", L"锁定",
                                 MB_OK | MB_ICONSTOP);
                 }
@@ -651,30 +707,48 @@ static LRESULT CALLBACK cfg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             int sel = (int)SendMessageW(g_hcfglist, LB_GETCURSEL, 0, 0);
             if (sel < 0) break;
             if (cfg_save_key(g_ini_path, g_cfg.models[sel].internal, key, val)) {
-                int oldsel = g_cur_model;
-                cfg_load(g_ini_path, &g_cfg);
-                /* 刷新主窗口机型下拉 */
-                SendMessageW(g_hmodel, CB_RESETCONTENT, 0, 0);
-                for (int i = 0; i < g_cfg.nmodels; i++)
-                    SendMessageW(g_hmodel, CB_ADDSTRING, 0, (LPARAM)g_cfg.models[i].display);
-                g_cur_model = oldsel < g_cfg.nmodels ? oldsel : 0;
-                SendMessageW(g_hmodel, CB_SETCURSEL, g_cur_model, 0);
-                refresh_buttons();
+                /* 保存后立即重载配置并刷新主界面 */
+                reload_config_and_ui();
                 cfg_show_model();
-                applog(CH_ENGINE, LOG_OK, L"[CFG] 已保存 %s.%s=%s",
-                       g_cfg.models[sel].internal, key, val);
+                applog(CH_ENGINE, LOG_OK, L"[CFG] 已保存 %s.%s=%s（配置已重载）",
+                       g_cfg.models[sel < g_cfg.nmodels ? sel : 0].internal, key, val);
             } else {
                 MessageBoxW(h, L"保存失败（ini 写入错误）。", L"错误", MB_OK | MB_ICONERROR);
             }
             break;
         }
+        case IDC_BTN_RESETCFG: {
+            if (MessageBoxW(h,
+                    L"确认恢复默认设置？\n\n当前 UdiskTools.ini 将被出厂默认配置覆盖，\n自定义的机型与路径修改会丢失！",
+                    L"恢复默认设置", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK)
+                break;
+            if (write_default_ini() && reload_config_and_ui()) {
+                g_cfg_unlocked = FALSE;
+                cfg_apply_lock();
+                /* 刷新机型列表与内容展示 */
+                SendMessageW(g_hcfglist, LB_RESETCONTENT, 0, 0);
+                for (int i = 0; i < g_cfg.nmodels; i++)
+                    SendMessageW(g_hcfglist, LB_ADDSTRING, 0, (LPARAM)g_cfg.models[i].display);
+                SendMessageW(g_hcfglist, LB_SETCURSEL, 0, 0);
+                cfg_show_model();
+                applog(CH_ENGINE, LOG_UI, L"[CFG] 已恢复默认设置（内嵌出厂配置覆盖并重载）");
+                MessageBoxW(h, L"已恢复默认设置并立即重载。", L"提示", MB_OK | MB_ICONINFORMATION);
+            } else {
+                MessageBoxW(h, L"恢复默认设置失败（ini 写入错误）。", L"错误", MB_OK | MB_ICONERROR);
+            }
+            break;
+        }
         case IDC_BTN_CLOSECFG:
+            /* 保存/修改后关闭时也确保配置已重载 */
+            reload_config_and_ui();
             DestroyWindow(h);
             break;
         }
         break;
 
     case WM_CLOSE:
+        /* 关闭配置窗口时重载配置（覆盖外部修改并刷新主界面） */
+        reload_config_and_ui();
         DestroyWindow(h);
         return 0;
     case WM_NCDESTROY:
@@ -788,9 +862,19 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             if (code == CBN_SELCHANGE) {
                 int sel = (int)SendMessageW(g_hmodel, CB_GETCURSEL, 0, 0);
                 if (sel >= 0 && sel < g_cfg.nmodels && sel != g_cur_model) {
-                    g_cur_model = sel;
-                    applog(CH_ENGINE, LOG_UI, L"[UI] 机型切换为：%s（内部键 %s，与轮询解耦）",
-                           g_cfg.models[sel].display, g_cfg.models[sel].internal);
+                    /* 切换机型：立即从磁盘重载配置项，再定位到所选机型 */
+                    wchar_t disp[CFG_VAL_LEN];
+                    SendMessageW(g_hmodel, CB_GETLBTEXT, sel, (LPARAM)disp);
+                    if (reload_config_and_ui()) {
+                        int newsel = -1;
+                        for (int i = 0; i < g_cfg.nmodels; i++)
+                            if (wcscmp(g_cfg.models[i].display, disp) == 0) { newsel = i; break; }
+                        if (newsel < 0) newsel = 0;
+                        g_cur_model = newsel;
+                        SendMessageW(g_hmodel, CB_SETCURSEL, newsel, 0);
+                    }
+                    applog(CH_ENGINE, LOG_UI, L"[UI] 机型切换为：%s（内部键 %s，配置已重载，与轮询解耦）",
+                           g_cfg.models[g_cur_model].display, g_cfg.models[g_cur_model].internal);
                     refresh_buttons();
                 }
             }
