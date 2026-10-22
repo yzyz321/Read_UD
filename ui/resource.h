@@ -34,6 +34,8 @@
 
 /* ---------- PANE_LABEL ---------- */
 #define IDC_STC_LABEL       1101   /* 标签信息行                               */
+#define IDC_STC_AUTOMODE    1104   /* AUTO / MANUAL 状态标记（状态行前缀）      */
+#define IDC_STC_SRCPATH     1105   /* 当前机型 SRCPATH 显示行                  */
 
 /* ---------- PANE_STATUS ---------- */
 #define IDC_STC_DEVICE      1201   /* 设备状态                                 */
@@ -62,7 +64,9 @@
 #define IDC_BTN_CLOSECFG    3005   /* 关闭                                     */
 #define IDC_STC_CFGSTATE    3006   /* 只读/已解锁状态                          */
 #define IDC_EDIT_CFGTEXT    3007   /* 配置内容展示（只读）                     */
-#define IDC_EDIT_CFGKEY     3008   /* 待修改键名（解锁后可用）                 */
+/* 已废弃：IDC_EDIT_CFGKEY（键名改为下拉选择 IDC_CFG_COMBO_KEY） */
+#define IDC_CFG_COMBO_KEY   3011   /* 键名下拉（列出当前机型全部键）           */
+#define IDC_CFG_COMBO_VAL   3012   /* 枚举型键值下拉（0/1、COPY/PROCESSED…）   */
 #define IDC_EDIT_CFGVAL     3009   /* 待修改键新值（解锁后可用）               */
 #define IDC_BTN_RESETCFG    3010   /* 恢复默认设置（内嵌出厂 ini 覆盖+确认）   */
 
