@@ -65,7 +65,7 @@
     </div>
     <div class="row">
       <div class="status" style="flex:2">设备状态<b>IDC_STC_DEVICE 1201</b></div>
-      <div class="status" style="flex:1;color:#d00">✕ 出错徽标<b>IDC_STC_ERROR 1202</b></div>
+      <div class="status" style="flex:1;color:#d00">✕/✓ 状态徽标<b>IDC_STC_ERROR 1202</b>（正常=绿 / 出错=红）</div>
     </div>
   </div>
 
@@ -133,7 +133,9 @@
     <tr><td>IDC_BTN_MONSTART 开始监控</td><td>监控关闭=绿色可用；监控中=浅灰禁用</td></tr>
     <tr><td>IDC_BTN_MONSTOP 停止监控</td><td>监控中=红色可用；监控关闭=浅灰禁用（点击同时中止任务）</td></tr>
     <tr><td>IDC_BTN_EXIT 退出</td><td>常灰可用；任务运行中退出需确认</td></tr>
-    <tr><td>IDC_STC_ERROR 出错徽标</td><td>出错=红字"✕ 出错：原因"+标题加[!]；成功/确认后熄灭；<b>每次插盘自动熄灭</b>（新盘重新判定）</td></tr>
+    <tr><td>IDC_STC_ERROR 状态徽标</td><td><b>正常=绿字"✓ …"</b>（插盘时/任务完成时）；<b>出错=红字"✕ 出错：原因"</b>+标题加[!]；每次插盘先熄灭再显示新盘状态；任务失败时红色由 ops 置位</td></tr>
+    <tr><td>IDC_STC_LABEL 标签行</td><td><b>随插拔实时刷新</b>：显示当前各盘卷标，如"标签：F: PHY-32"；多盘逐个列出；无盘显示"（无磁盘）"</td></tr>
+    <tr><td>IDC_STC_INSERTCOUNT 插拔计数器（1017，状态行右端）</td><td>每次<b>插入</b> U 盘 +1（拔出不计）；启动为 0，退出程序不保存（下次启动自动归零）；启动时已插着的盘不计入</td></tr>
     <tr><td>IDC_STC_READVERDICT 判定</td><td>PASS=绿 / FAIL=红</td></tr>
     <tr><td>IDC_CHK_HOTKEY 快捷键使能</td><td>勾选=注册 T/C 全局热键；取消=注销（默认不勾选）</td></tr>
     <tr><td>IDC_COMBO_MODEL 机型下拉</td><td>显示 DISPLAYNAME；切换只影响后续任务（与轮询解耦）</td></tr>
