@@ -120,6 +120,7 @@ static void dpi_update_font(void)
         if (g_hcmd[1]) SendMessageW(g_hcmd[1], WM_SETFONT, (WPARAM)g_font_mono, TRUE);
         if (g_hfile)   SendMessageW(g_hfile, WM_SETFONT, (WPARAM)g_font_mono, TRUE);
         if (g_hdev)    SendMessageW(g_hdev, WM_SETFONT, (WPARAM)g_font_bold, TRUE);  /* 设备状态粗体 */
+        if (g_hcount)  SendMessageW(g_hcount, WM_SETFONT, (WPARAM)g_font_bold, TRUE); /* 插拔计数粗体 */
     }
 }
 
@@ -357,6 +358,15 @@ static void set_monstatus(const wchar_t* title, const wchar_t* sub, COLORREF tit
         SetWindowTextW(g_hmonfile, L"");
 }
 
+/* 插拔计数器：仅在监控开启时计数；显示"计数:0000"4 位循环（9999 后回 0000） */
+static void update_count_text(void)
+{
+    if (!g_hcount) return;
+    wchar_t ct[32];
+    _snwprintf(ct, 32, L"计数:%04lu", (unsigned long)(g_inscount % 10000));
+    SetWindowTextW(g_hcount, ct);
+}
+
 static void update_device_text(void)
 {
     if (!g_dev_mask) {
@@ -547,25 +557,22 @@ static void layout(void)
     int rowh = dpi_scale(26);
     int y = m;
 
-    /* PANE_TOP 第一行：机型下拉 + 操作按钮
+    /* PANE_TOP 第一行：机型下拉 + 操作按钮（8 个按钮统一尺寸，文字居中）
      * 注意：COMBO 的 MoveWindow 高度是"含下拉列表"的总高度，必须给足 */
     MoveWindow(g_hmodel, m, y, dpi_scale(200), dpi_scale(180), TRUE);
     int x = m + dpi_scale(206);
-    struct { int id; int w; } btns[] = {
-        { IDC_BTN_START, 62 }, { IDC_BTN_STOP, 54 }, { IDC_BTN_WRITELABEL, 56 },
-        { IDC_BTN_READCHECK, 78 }, { IDC_BTN_RWTEST, 78 },
-        { IDC_BTN_FORMAT, 66 }, { IDC_BTN_CONFIG, 56 },
-    };
+    int opw = dpi_scale(88);   /* 统一按钮宽度 */
+    int opids[] = { IDC_BTN_START, IDC_BTN_STOP, IDC_BTN_WRITELABEL,
+                    IDC_BTN_READCHECK, IDC_BTN_RWTEST, IDC_BTN_FORMAT, IDC_BTN_CONFIG };
     for (int i = 0; i < 7; i++) {
-        HWND hb = GetDlgItem(g_hmain, btns[i].id);
-        int bw = dpi_scale(btns[i].w);
-        MoveWindow(hb, x, y, bw, rowh, TRUE);
-        x += bw + dpi_scale(4);
+        HWND hb = GetDlgItem(g_hmain, opids[i]);
+        MoveWindow(hb, x, y, opw, rowh, TRUE);   /* BS_PUSHBUTTON 文字默认水平/垂直居中 */
+        x += opw + dpi_scale(4);
     }
 
-    /* PANE_TOP 第二行：读取标签 + 置顶 + 快捷键使能 */
+    /* PANE_TOP 第二行：读取标签 + 置顶 + 快捷键使能（读取标签与第一行按钮同宽） */
     int y2 = y + rowh + dpi_scale(4);
-    MoveWindow(GetDlgItem(g_hmain, IDC_BTN_READLABEL), m, y2, dpi_scale(80), rowh, TRUE);
+    MoveWindow(GetDlgItem(g_hmain, IDC_BTN_READLABEL), m, y2, opw, rowh, TRUE);
     MoveWindow(g_hchk_top, m + dpi_scale(86), y2, dpi_scale(80), rowh, TRUE);
     MoveWindow(g_hchk_hotkey, m + dpi_scale(172), y2, dpi_scale(96), rowh, TRUE);
 
@@ -581,14 +588,14 @@ static void layout(void)
     MoveWindow(g_hsrcpath, m + modew + dpi_scale(8), y + dpi_scale(4),
                W - 2 * m - modew - cntw - dpi_scale(16), rowh, TRUE);
     MoveWindow(g_hcount, W - m - cntw, y + dpi_scale(4), cntw, rowh, TRUE);
-    y += rowh + dpi_scale(2);
+    y += rowh + dpi_scale(12);   /* 设备状态行及以下整体下移，与状态行拉开间距 */
 
     /* 设备状态 + 出错徽标 */
     int devw = (W - 2 * m) * 2 / 3;
     MoveWindow(g_hdev, m, y, devw, rowh, TRUE);
     MoveWindow(g_herr, m + devw + dpi_scale(6), y,
                W - 2 * m - devw - dpi_scale(6), rowh, TRUE);
-    y += rowh + dpi_scale(4);
+    y += rowh + dpi_scale(6);
     /* PANE_TASK 进度条 */
     MoveWindow(g_hprog, m, y + dpi_scale(5), W - 2 * m, dpi_scale(16), TRUE);
     y += rowh + dpi_scale(10);
@@ -712,15 +719,17 @@ static int key_enum_values(const wchar_t* key, const wchar_t** vals, int max)
     return n;
 }
 
-/* 按当前选中键切换"新值"控件：枚举→下拉；普通→输入框 */
-static void cfg_sync_value_editor(void)
+/* 按当前键切换"新值"控件：枚举→下拉；普通（SRCPATH/DSTPATH/READFILE 等）→输入框
+ * fill_value=TRUE 时把配置里的当前值回填到值控件（列表选择时）；
+ * 手动键入键名时 fill_value=FALSE，避免打断正在进行的输入 */
+static void cfg_sync_value_editor_ex(BOOL fill_value)
 {
-    int ki = (int)SendMessageW(g_hcfgkey, CB_GETCURSEL, 0, 0);
-    int mi = (int)SendMessageW(g_hcfglist, LB_GETCURSEL, 0, 0);
-    if (ki < 0 || mi < 0 || mi >= g_cfg.nmodels) return;
-
     wchar_t key[CFG_KEY_LEN];
-    SendMessageW(g_hcfgkey, CB_GETLBTEXT, ki, (LPARAM)key);
+    GetWindowTextW(g_hcfgkey, key, CFG_KEY_LEN);   /* 兼容手输键名（CBS_DROPDOWN） */
+    if (!key[0]) return;
+    int mi = (int)SendMessageW(g_hcfglist, LB_GETCURSEL, 0, 0);
+    if (mi < 0 || mi >= g_cfg.nmodels) return;
+
     SetWindowTextW(g_hcfghint, key_hint(key));   /* 键值说明提示 */
     CFGMODEL* m = &g_cfg.models[mi];
     const wchar_t* cur = cfg_get(m, key);
@@ -741,9 +750,14 @@ static void cfg_sync_value_editor(void)
     } else {
         ShowWindow(g_hcfgvalcombo, SW_HIDE);
         ShowWindow(g_hcfgval, SW_SHOW);
-        SetWindowTextW(g_hcfgval, cur);
+        if (fill_value) SetWindowTextW(g_hcfgval, cur);
     }
     cfg_apply_lock();
+}
+
+static void cfg_sync_value_editor(void)
+{
+    cfg_sync_value_editor_ex(TRUE);
 }
 
 static void cfg_show_model(void)
@@ -837,9 +851,9 @@ static void cfg_create_controls(HWND h)
                     WS_CHILD | WS_VISIBLE | (style), x2, y2, w2, h2, \
                     h, (HMENU)(INT_PTR)(id), g_hinst, NULL); \
         SendMessageW(hc, WM_SETFONT, (WPARAM)f, TRUE); } while (0)
-    #define CFGCOMBO(id, x2, y2, w2, h2) do { \
+    #define CFGCOMBO(id, x2, y2, w2, h2, style) do { \
         HWND hc = CreateWindowExW(0, L"COMBOBOX", NULL, \
-                    WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, \
+                    WS_CHILD | WS_VISIBLE | WS_VSCROLL | (style), \
                     x2, y2, w2, h2, h, (HMENU)(INT_PTR)(id), g_hinst, NULL); \
         SendMessageW(hc, WM_SETFONT, (WPARAM)f, TRUE); } while (0)
     #define CFGBTN(id, txt, x2, y2, w2, h2) do { \
@@ -853,11 +867,13 @@ static void cfg_create_controls(HWND h)
     y += rowh * 4 + dpi_scale(8);
 
     CFGSTC(0, L"键（选择）：", m, y + dpi_scale(4), dpi_scale(160), rowh);
-    CFGCOMBO(IDC_CFG_COMBO_KEY, m + dpi_scale(165), y, dpi_scale(320), rowh + dpi_scale(150));
+    CFGCOMBO(IDC_CFG_COMBO_KEY, m + dpi_scale(165), y, dpi_scale(320),
+             rowh + dpi_scale(150), CBS_DROPDOWN);   /* 可输入：允许键入列表外的新键名 */
     y += rowh + dpi_scale(4);
     CFGSTC(0, L"新值：", m, y + dpi_scale(4), dpi_scale(160), rowh);
     CFGEDIT(IDC_EDIT_CFGVAL, m + dpi_scale(165), y, dpi_scale(320), rowh, ES_AUTOHSCROLL);
-    CFGCOMBO(IDC_CFG_COMBO_VAL, m + dpi_scale(165), y, dpi_scale(320), rowh + dpi_scale(150));
+    CFGCOMBO(IDC_CFG_COMBO_VAL, m + dpi_scale(165), y, dpi_scale(320),
+             rowh + dpi_scale(150), CBS_DROPDOWNLIST);
     y += rowh + dpi_scale(4);
 
     /* 键值说明提示（选中键后自动显示） */
@@ -917,7 +933,10 @@ static LRESULT CALLBACK cfg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             if (HIWORD(wp) == LBN_SELCHANGE) cfg_show_model();
             break;
         case IDC_CFG_COMBO_KEY:
-            if (HIWORD(wp) == CBN_SELCHANGE) cfg_sync_value_editor();
+            if (HIWORD(wp) == CBN_SELCHANGE)
+                cfg_sync_value_editor_ex(TRUE);    /* 列表选择：回填当前值 */
+            else if (HIWORD(wp) == CBN_EDITCHANGE)
+                cfg_sync_value_editor_ex(FALSE);   /* 手输键名：只切类型/更新说明 */
             break;
         case IDC_BTN_UNLOCK: {
             /* 两步式：第一次点击显示密码框；输入密码后再次点击校验 */
@@ -968,8 +987,7 @@ static LRESULT CALLBACK cfg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                 break;
             }
             wchar_t key[CFG_KEY_LEN] = L"", val[CFG_VAL_LEN] = L"";
-            int ki = (int)SendMessageW(g_hcfgkey, CB_GETCURSEL, 0, 0);
-            if (ki >= 0) SendMessageW(g_hcfgkey, CB_GETLBTEXT, ki, (LPARAM)key);
+            GetWindowTextW(g_hcfgkey, key, CFG_KEY_LEN);   /* 兼容手输的新键名 */
             if (!key[0]) {
                 MessageBoxW(h, L"请选择要修改的键。", L"提示", MB_OK);
                 break;
@@ -1073,7 +1091,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         g_hlabel = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_LABEL, L"标签：");
         g_hautomode = MKCTL(L"RICHEDIT50W", 0, ES_READONLY | ES_CENTER, IDC_STC_AUTOMODE, L"MANUAL");
         g_hsrcpath = MKCTL(L"STATIC", 0, SS_LEFT | SS_ENDELLIPSIS, IDC_STC_SRCPATH, L"SRCPATH：");
-        g_hcount = MKCTL(L"STATIC", 0, SS_RIGHT, IDC_STC_INSERTCOUNT, L"插拔计数：0");
+        g_hcount = MKCTL(L"STATIC", 0, SS_RIGHT, IDC_STC_INSERTCOUNT, L"计数:0000");
         g_hdev = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_DEVICE, L"设备状态：检测中…");
         g_herr = MKCTL(L"RICHEDIT50W", 0, ES_READONLY, IDC_STC_ERROR, L"");
         g_hprog = MKCTL(PROGRESS_CLASSW, 0, PBS_SMOOTH, IDC_PBAR_TASK, L"");
@@ -1275,11 +1293,11 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                 set_error_badge(FALSE, NULL);
                 SetWindowTextW(g_hcmd[0], L"");
                 set_ok_badge(L"");   /* 绿色正常提示（后续任务出错会转红） */
-                /* 插拔计数器：每次插入 +1（退出程序不保存，启动自动归零） */
-                InterlockedIncrement(&g_inscount);
-                wchar_t ct[64];
-                _snwprintf(ct, 64, L"插拔计数：%ld", (long)g_inscount);
-                SetWindowTextW(g_hcount, ct);
+                /* 插拔计数器：仅监控开启时计数；4 位循环（9999→0000），退出程序不保存 */
+                if (g_monitoring) {
+                    InterlockedIncrement(&g_inscount);
+                    update_count_text();
+                }
                 /* 机型 = 当前下拉框选择（与轮询解耦）；监控开启或机型 AUTORUN=1 时自动执行 */
                     CFGMODEL* m = &g_cfg.models[g_cur_model];
                     if ((g_monitoring || cfg_get_int(m, L"AUTORUN", 0)) && !g_running)
