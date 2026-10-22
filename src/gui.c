@@ -49,6 +49,7 @@ static const COLORREF g_btncol[3] = {
 /* ---------- 前向声明 ---------- */
 static void update_srcpath_text(void);
 static void set_run_state(BOOL is_auto);
+static void refresh_run_state(void);
 
 /* ---------- DPI 辅助 ---------- */
 static UINT get_system_dpi(void)
@@ -206,6 +207,7 @@ static void refresh_buttons(void)
     EnableWindow(GetDlgItem(g_hmain, IDC_BTN_STOP), busy);
 
     update_srcpath_text();   /* 状态行同步显示当前机型 SRCPATH */
+    refresh_run_state();     /* AUTO/MANUAL 随监控开关 / 机型 AUTORUN 统一刷新 */
 
     /* 监控按钮状态与颜色（自绘按钮需重绘） */
     BOOL mon = g_monitoring != 0;
@@ -269,7 +271,8 @@ static void set_verdict_colored(const wchar_t* txt, COLORREF color)
     set_text_color(g_hverdict, txt, color);
 }
 
-/* AUTO / MANUAL 状态标记：AUTO=绿，MANUAL=蓝 */
+/* AUTO / MANUAL 状态标记：AUTO=绿，MANUAL=蓝
+ * 注意：只允许由 refresh_run_state() 调用，避免各处散落的 set_run_state 互相覆盖 */
 static void set_run_state(BOOL is_auto)
 {
     if (!g_hautomode) return;
@@ -277,6 +280,36 @@ static void set_run_state(BOOL is_auto)
         set_text_color(g_hautomode, L"AUTO", RGB(0, 140, 0));
     else
         set_text_color(g_hautomode, L"MANUAL", RGB(0, 90, 200));
+}
+
+/* IDC_STC_AUTOMODE 1104 的唯一判定点：
+ *   AUTO   = 监控已开启(g_monitoring) 或 当前机型 AUTORUN=1 → 插盘会自动执行整任务
+ *   MANUAL = 两者皆无 → 只能手动点按钮
+ * AUTO_COPY / AUTO_TEST 只决定"自动流程内做哪几步"，不参与 AUTO/MANUAL 判定，
+ * 否则会出现"配了自动复制却显示 MANUAL""自动跑完被手动按钮改成 MANUAL"之类的错乱。 */
+static LONG g_run_state = -1;   /* -1 未知 / 0 MANUAL / 1 AUTO，仅用于变化时记日志 */
+
+static BOOL run_auto_mode(void)
+{
+    if (g_monitoring) return TRUE;
+    if (g_cfg.nmodels > 0 && g_cur_model >= 0 &&
+        cfg_get_int(&g_cfg.models[g_cur_model], L"AUTORUN", 0)) return TRUE;
+    return FALSE;
+}
+
+static void refresh_run_state(void)
+{
+    if (!g_hautomode) return;
+    BOOL a = run_auto_mode();
+    set_run_state(a);
+    LONG v = a ? 1 : 0;
+    if (v != g_run_state) {
+        const wchar_t* why = a
+            ? (g_monitoring ? L"监控已开启" : L"本机型 AUTORUN=1")
+            : L"未开监控且本机型 AUTORUN=0";
+        g_run_state = v;
+        applog(CH_ENGINE, LOG_UI, L"[UI] 运行模式 %s（%s）", a ? L"AUTO" : L"MANUAL", why);
+    }
 }
 
 /* 状态行显示当前机型 SRCPATH */
@@ -398,7 +431,7 @@ void task_run_async(int model_index, int trigger)
     a->model_index = model_index;
     a->trigger = trigger;
     a->drive = drive;
-    set_run_state(trigger == TRIGGER_AUTO);
+    refresh_run_state();   /* 运行模式由监控开关/AUTORUN 决定，不由本次触发方式决定 */
     HANDLE h = CreateThread(NULL, 0, task_thread, a, 0, NULL);
     if (h) CloseHandle(h);
     else { InterlockedExchange(&g_running, 0); free(a); }
@@ -463,7 +496,7 @@ static void run_single(int op)
     a->op = op;
     a->model_index = g_cur_model;
     a->drive = drive;
-    set_run_state(FALSE);   /* 单操作按钮 = 手动 */
+    refresh_run_state();   /* 单操作不改变运行模式：监控开着仍显示 AUTO */
     HANDLE h = CreateThread(NULL, 0, op_thread, a, 0, NULL);
     if (h) CloseHandle(h);
     else { InterlockedExchange(&g_running, 0); free(a); }
@@ -1119,7 +1152,6 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         case IDC_BTN_MONSTART:
             if (code == BN_CLICKED) {
                 InterlockedExchange(&g_monitoring, 1);
-                set_run_state(TRUE);
                 set_monstatus(L"监控已开启：等待插入可移动磁盘…", L"", RGB(0, 150, 0));
                 applog(CH_ENGINE, LOG_UI, L"[UI] 操作员开启监控（插盘自动执行当前机型任务）");
                 refresh_buttons();
@@ -1130,7 +1162,6 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                 InterlockedExchange(&g_monitoring, 0);
                 /* 仅在任务执行中才置停止标志；设备轮询/状态显示不受监控开关影响 */
                 if (g_running) InterlockedExchange(&g_stop, 1);
-                set_run_state(FALSE);
                 set_monstatus(L"监控已停止", L"", RGB(200, 0, 0));
                 applog(CH_ENGINE, LOG_UI, L"[UI] 操作员停止监控（设备检测仍持续显示插拔信息）");
                 refresh_buttons();
@@ -1345,7 +1376,7 @@ int gui_run(HINSTANCE hInst, int nShow)
     UpdateWindow(h);
     layout();
     refresh_buttons();
-    set_run_state(FALSE);                              /* 初始 MANUAL */
+    refresh_run_state();   /* 启动时按配置推导：本机型 AUTORUN=1 直接显示 AUTO */
     set_monstatus(L"监控已停止", L"", RGB(200, 0, 0));   /* 初始状态：红色 */
 
     /* 快捷键默认不注册，由"快捷键使能"复选框控制 */

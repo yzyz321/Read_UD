@@ -39,6 +39,7 @@ static const char* DEFAULT_INI_UTF8 =
 "ENABLE_USBINFO=1\n"
 "AUTO_COPY=1                     ; 自动复制：1=插盘自动复制（需 AUTORUN=1 或开启监控）；0=仅手动点[复制]\n"
 "AUTO_TEST=0                     ; 自动测试：1=插盘自动执行读写测试；0=仅手动点[读写测试]\n"
+"AUTORUN=0                       ; 插盘自动执行：1=插U盘即自动跑整任务（无需开监控，状态行显示 AUTO）；0=需先点[开始监控]\n"
 "BTN_WRITELABEL=升级             ; 按钮显示名覆盖（缺省时用默认名\"写入标签\"）\n"
 "; BTN_START=开始                ; 其余按钮同理：BTN_START/BTN_STOP/BTN_FORMAT/BTN_READLABEL/...\n"
 "WRITEMODE=COPY                  ; 简单复制\n"
@@ -64,6 +65,7 @@ static const char* DEFAULT_INI_UTF8 =
 "ENABLE_USBINFO=1\n"
 "AUTO_COPY=1                     ; 自动复制：1=插盘自动复制（需 AUTORUN=1 或开启监控）；0=仅手动点[复制]\n"
 "AUTO_TEST=0                     ; 自动测试：1=插盘自动执行读写测试；0=仅手动点[读写测试]\n"
+"AUTORUN=0                       ; 插盘自动执行：1=插U盘即自动跑整任务（无需开监控，状态行显示 AUTO）；0=需先点[开始监控]\n"
 "; BTN_* 按钮显示名本机型未自定义，全部使用默认名\n"
 "WRITEMODE=COPY\n"
 "SRCPATH=.\\upgrade\\*.*          ; 写入源（支持通配符；按现场路径修改）\n"
@@ -88,6 +90,7 @@ static const char* DEFAULT_INI_UTF8 =
 "ENABLE_USBINFO=1\n"
 "AUTO_COPY=1                     ; 自动复制：1=插盘自动复制（需 AUTORUN=1 或开启监控）；0=仅手动点[复制]\n"
 "AUTO_TEST=0                     ; 自动测试：1=插盘自动执行读写测试；0=仅手动点[读写测试]\n"
+"AUTORUN=0                       ; 插盘自动执行：1=插U盘即自动跑整任务（无需开监控，状态行显示 AUTO）；0=需先点[开始监控]\n"
 "WRITEMODE=COPY\n"
 "READFILE=8685????.txt           ; 通配符：8685 + 恰好 4 个任意字符（可变序列号尾号）\n"
 "MATCH_POLICY=NEWEST             ; 多个命中时取最新的一个\n"
@@ -110,6 +113,7 @@ static const char* DEFAULT_INI_UTF8 =
 "ENABLE_USBINFO=1\n"
 "AUTO_COPY=1                     ; 自动复制：1=插盘自动复制（需 AUTORUN=1 或开启监控）；0=仅手动点[复制]\n"
 "AUTO_TEST=0                     ; 自动测试：1=插盘自动执行读写测试；0=仅手动点[读写测试]\n"
+"AUTORUN=0                       ; 插盘自动执行：1=插U盘即自动跑整任务（无需开监控，状态行显示 AUTO）；0=需先点[开始监控]\n"
 "WRITEMODE=COPY\n"
 "SRCPATH=.\\updata_k2311\\*.*          ; 写入源，按现场路径修改\n"
 "DSTPATH=\\\n"
@@ -121,7 +125,6 @@ static const char* DEFAULT_INI_UTF8 =
 "FILESYSTEM=EXFAT\n"
 "VOLUME=\n"
 "HASH=md5\n"
-"\n"
 ;
 
 #endif
