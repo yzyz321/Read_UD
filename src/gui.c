@@ -1233,9 +1233,12 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         update_device_text();
         for (wchar_t d = L'C'; d <= L'Z'; d++) {
             if (changed & (1u << (d - L'A'))) {
-                if (inserted) {
-                    applog(CH_ENGINE, LOG_UI, L"[DEV] 检测到可移动磁盘 %c:\\ 插入", d);
-                    /* 机型 = 当前下拉框选择（与轮询解耦）；监控开启或机型 AUTORUN=1 时自动执行 */
+            if (inserted) {
+                applog(CH_ENGINE, LOG_UI, L"[DEV] 检测到可移动磁盘 %c:\\ 插入", d);
+                /* 每次插盘先清掉上一轮的信息状态：出错徽标熄灭 + CMD-A 清屏，本轮日志从头显示 */
+                set_error_badge(FALSE, NULL);
+                SetWindowTextW(g_hcmd[0], L"");
+                /* 机型 = 当前下拉框选择（与轮询解耦）；监控开启或机型 AUTORUN=1 时自动执行 */
                     CFGMODEL* m = &g_cfg.models[g_cur_model];
                     if ((g_monitoring || cfg_get_int(m, L"AUTORUN", 0)) && !g_running)
                         task_run_async(g_cur_model, TRIGGER_AUTO);
