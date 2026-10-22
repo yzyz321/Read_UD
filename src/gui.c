@@ -28,7 +28,9 @@ static HWND g_hmain = NULL;
 static HWND g_hmodel = NULL, g_hlabel = NULL, g_hdev = NULL,
             g_herr = NULL, g_hprog = NULL, g_hcmd[2] = { NULL, NULL },
             g_hverdict = NULL, g_hfile = NULL, g_hchk_top = NULL,
-            g_hchk_hotkey = NULL, g_hautomode = NULL, g_hsrcpath = NULL;
+            g_hchk_hotkey = NULL, g_hautomode = NULL, g_hsrcpath = NULL,
+            g_hcount = NULL;
+static volatile LONG g_inscount = 0;    /* 插拔计数器：每次插入 +1（不持久化，退出即清零） */
 static BOOL g_hotkey_enabled = FALSE;   /* 快捷键使能（IDC_CHK_HOTKEY） */
 static HFONT g_font = NULL, g_font_mono = NULL, g_font_bold = NULL;
 static UINT g_dpi = 96;
@@ -218,26 +220,46 @@ static void refresh_buttons(void)
         if (g_hmonbtn[i]) InvalidateRect(g_hmonbtn[i], NULL, TRUE);
 }
 
-static void set_error_badge(BOOL on, const wchar_t* msg)
+/* 徽标通用绘制：绿=正常提示，红=出错（红时标题加 [!]，绿/清空时去掉） */
+static void badge_paint(const wchar_t* txt, COLORREF color, BOOL is_error)
 {
     HWND h = g_herr;
-    if (on) {
-        wchar_t txt[300];
-        _snwprintf(txt, 300, L"✕ 出错%s%s", msg && msg[0] ? L"：" : L"", msg ? msg : L"");
-        SetWindowTextW(h, txt);
-        CHARFORMAT2W cf; memset(&cf, 0, sizeof(cf));
-        cf.cbSize = sizeof(cf); cf.dwMask = CFM_COLOR | CFM_BOLD;
-        cf.dwEffects = CFE_BOLD; cf.crTextColor = RGB(200, 0, 0);
-        SendMessageW(h, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
-        wchar_t t[256];
+    SetWindowTextW(h, txt);
+    CHARFORMAT2W cf; memset(&cf, 0, sizeof(cf));
+    cf.cbSize = sizeof(cf); cf.dwMask = CFM_COLOR | CFM_BOLD;
+    cf.dwEffects = CFE_BOLD; cf.crTextColor = color;
+    SendMessageW(h, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
+    wchar_t t[256];
+    GetWindowTextW(g_hmain, t, 200);
+    wchar_t* bang = wcsstr(t, L" [!]");
+    if (bang) { *bang = 0; SetWindowTextW(g_hmain, t); }
+    if (is_error) {
         GetWindowTextW(g_hmain, t, 200);
         if (!wcsstr(t, L"[!]")) {
             wchar_t t2[260];
             _snwprintf(t2, 260, L"%s [!]", t);
             SetWindowTextW(g_hmain, t2);
         }
+    }
+}
+
+/* 绿色正常提示（插盘/任务完成等） */
+static void set_ok_badge(const wchar_t* msg)
+{
+    wchar_t txt[300];
+    _snwprintf(txt, 300, L"✓ %s", msg && msg[0] ? msg : L"正常");
+    badge_paint(txt, RGB(0, 150, 0), FALSE);
+}
+
+/* 红色出错提示 */
+static void set_error_badge(BOOL on, const wchar_t* msg)
+{
+    if (on) {
+        wchar_t txt[300];
+        _snwprintf(txt, 300, L"✕ 出错%s%s", msg && msg[0] ? L"：" : L"", msg ? msg : L"");
+        badge_paint(txt, RGB(200, 0, 0), TRUE);
     } else {
-        SetWindowTextW(h, L"");
+        SetWindowTextW(g_herr, L"");
         wchar_t t[256];
         GetWindowTextW(g_hmain, t, 200);
         wchar_t* bang = wcsstr(t, L" [!]");
@@ -339,10 +361,12 @@ static void update_device_text(void)
 {
     if (!g_dev_mask) {
         SetWindowTextW(g_hdev, L"设备状态：未检测到可移动磁盘（等待插入…）");
-        SetWindowTextW(g_hlabel, L"标签：");
+        SetWindowTextW(g_hlabel, L"标签：（无磁盘）");
         return;
     }
     wchar_t txt[512] = L"设备状态：";
+    wchar_t lbl[512] = L"标签：";
+    BOOL any = FALSE, lab = FALSE;
     for (wchar_t d = L'C'; d <= L'Z'; d++) {
         if (g_dev_mask & (1u << (d - L'A'))) {
             DEVINFO di;
@@ -352,9 +376,18 @@ static void update_device_text(void)
                        di.volume[0] ? di.volume : L"无卷标",
                        di.total_bytes / 1073741824.0);
             lstrcatW(txt, one);
+            _snwprintf(one, 160, L"%s%c: ", any ? L"  " : L"", d);
+            if (di.volume[0]) {
+                lstrcatW(lbl, one);
+                lstrcatW(lbl, di.volume);
+                lab = TRUE;
+            }
+            any = TRUE;
         }
     }
+    if (!lab) lstrcatW(lbl, L"（当前磁盘均无卷标）");
     SetWindowTextW(g_hdev, txt);
+    SetWindowTextW(g_hlabel, lbl);   /* IDC_STC_LABEL 1101 随插拔实时刷新 */
 }
 
 /* ---------- 任务执行 ---------- */
@@ -541,11 +574,13 @@ static void layout(void)
     MoveWindow(g_hlabel, m, y, W - 2 * m, rowh, TRUE);
     y += rowh + dpi_scale(2);
 
-    /* PANE_STATUS 状态行：AUTO/MANUAL 标记 + SRCPATH */
+    /* PANE_STATUS 状态行：AUTO/MANUAL 标记 + SRCPATH + 插拔计数器 */
     int modew = dpi_scale(76);
+    int cntw = dpi_scale(110);
     MoveWindow(g_hautomode, m, y, modew, rowh, TRUE);
     MoveWindow(g_hsrcpath, m + modew + dpi_scale(8), y + dpi_scale(4),
-               W - 2 * m - modew - dpi_scale(8), rowh, TRUE);
+               W - 2 * m - modew - cntw - dpi_scale(16), rowh, TRUE);
+    MoveWindow(g_hcount, W - m - cntw, y + dpi_scale(4), cntw, rowh, TRUE);
     y += rowh + dpi_scale(2);
 
     /* 设备状态 + 出错徽标 */
@@ -1038,6 +1073,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         g_hlabel = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_LABEL, L"标签：");
         g_hautomode = MKCTL(L"RICHEDIT50W", 0, ES_READONLY | ES_CENTER, IDC_STC_AUTOMODE, L"MANUAL");
         g_hsrcpath = MKCTL(L"STATIC", 0, SS_LEFT | SS_ENDELLIPSIS, IDC_STC_SRCPATH, L"SRCPATH：");
+        g_hcount = MKCTL(L"STATIC", 0, SS_RIGHT, IDC_STC_INSERTCOUNT, L"插拔计数：0");
         g_hdev = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_DEVICE, L"设备状态：检测中…");
         g_herr = MKCTL(L"RICHEDIT50W", 0, ES_READONLY, IDC_STC_ERROR, L"");
         g_hprog = MKCTL(PROGRESS_CLASSW, 0, PBS_SMOOTH, IDC_PBAR_TASK, L"");
@@ -1238,6 +1274,12 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                 /* 每次插盘先清掉上一轮的信息状态：出错徽标熄灭 + CMD-A 清屏，本轮日志从头显示 */
                 set_error_badge(FALSE, NULL);
                 SetWindowTextW(g_hcmd[0], L"");
+                set_ok_badge(L"");   /* 绿色正常提示（后续任务出错会转红） */
+                /* 插拔计数器：每次插入 +1（退出程序不保存，启动自动归零） */
+                InterlockedIncrement(&g_inscount);
+                wchar_t ct[64];
+                _snwprintf(ct, 64, L"插拔计数：%ld", (long)g_inscount);
+                SetWindowTextW(g_hcount, ct);
                 /* 机型 = 当前下拉框选择（与轮询解耦）；监控开启或机型 AUTORUN=1 时自动执行 */
                     CFGMODEL* m = &g_cfg.models[g_cur_model];
                     if ((g_monitoring || cfg_get_int(m, L"AUTORUN", 0)) && !g_running)
@@ -1271,10 +1313,15 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         free((void*)lp);
         return 0;
     }
-    case WM_APP_ERROR:
-        set_error_badge(wp != 0, (wchar_t*)lp);
-        free((void*)lp);
+    case WM_APP_ERROR: {
+        /* wparam: 1=红色出错；0=绿色正常提示（有文本时） */
+        wchar_t* s = (wchar_t*)lp;
+        if (wp != 0) set_error_badge(TRUE, s);
+        else if (s && s[0]) set_ok_badge(s);
+        else set_error_badge(FALSE, NULL);
+        free((void*)s);
         return 0;
+    }
     case WM_APP_MODE:
         /* 已废弃（待机/模式标记取消），保留消息号兼容 */
         return 0;
@@ -1291,6 +1338,9 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_TASKDONE:
         InterlockedExchange(&g_running, 0);
         InterlockedExchange(&g_stop, 0);
+        /* 徽标随结果刷新：成功=绿"任务完成"；已停止=绿"任务已停止"；失败时红色出错徽标已由 ops 置位 */
+        if (wp == 0)      set_ok_badge(L"任务完成");
+        else if (wp == 2) set_ok_badge(L"任务已停止");
         refresh_buttons();
         return 0;
 
@@ -1397,6 +1447,9 @@ int gui_run(HINSTANCE hInst, int nShow)
 
     /* 启动设备轮询（机型匹配与轮询解耦） */
     dev_poll_start(h);
+    /* 启动时先枚举一次：仅刷新设备/标签行显示（已插着的盘不计数、不触发任务） */
+    dev_enum_removable(&g_dev_mask, NULL);
+    update_device_text();
 
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
