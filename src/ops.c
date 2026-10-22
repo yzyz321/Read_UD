@@ -133,6 +133,22 @@ int op_write(const CFGMODEL* m, wchar_t drive)
         path_join(dir, MAX_PATH, exe_dir(), L"");
     }
 
+    /* 归一化路径：解析 "." ".."，相对路径以 exe 所在目录为基准 */
+    {
+        wchar_t resolved[MAX_PATH];
+        DWORD fn = GetFullPathNameW(dir, MAX_PATH, resolved, NULL);
+        if (fn > 0 && fn < MAX_PATH) lstrcpynW(dir, resolved, MAX_PATH);
+    }
+    /* 源目录是否存在：区分"目录不存在"和"目录存在但无匹配文件" */
+    {
+        DWORD dattr = GetFileAttributesW(dir);
+        if (dattr == INVALID_FILE_ATTRIBUTES || !(dattr & FILE_ATTRIBUTE_DIRECTORY)) {
+            fail(OP, L"源目录不存在：%s（相对路径以程序目录 %s 为基准，请检查目录名与路径）",
+                 dir, exe_dir());
+            return 1;
+        }
+    }
+
     /* 展开 U 盘目标路径 */
     const wchar_t* dp = dstpath;
     while (*dp == L'\\') dp++;
@@ -140,7 +156,8 @@ int op_write(const CFGMODEL* m, wchar_t drive)
     _snwprintf(dstdir, MAX_PATH, L"%c:\\%s", drive, dp);
     dstdir[MAX_PATH - 1] = 0;
 
-    applog(CH_ENGINE, LOG_INFO, L"[%s] 开始写入：%s → %c:\\%s", OP, srcpat, drive, dp);
+    applog(CH_ENGINE, LOG_INFO, L"[%s] 开始写入：源目录 %s（通配 %s） → %c:\\%s",
+           OP, dir, fname, drive, dp);
 
     /* 目标目录不存在则自动建立（支持多级） */
     if (!util_ensure_dirs(dstdir)) {
@@ -153,15 +170,20 @@ int op_write(const CFGMODEL* m, wchar_t drive)
     path_join(findpat, MAX_PATH, dir, fname);
     HANDLE h = FindFirstFileW(findpat, &fd);
     if (h == INVALID_HANDLE_VALUE) {
-        fail(OP, L"源路径无匹配文件：%s", findpat);
+        fail(OP, L"源目录存在，但没有匹配文件（通配符 %s）：%s", fname, findpat);
         return 1;
     }
 
     int n_ok = 0, n_fail = 0, n_total = 0;
-    /* 先计数用于进度 */
-    do n_total++; while (FindNextFileW(h, &fd));
+    /* 先计数（只统计文件，目录不参与复制）用于进度 */
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) n_total++;
+    } while (FindNextFileW(h, &fd));
     FindClose(h);
-    if (n_total == 0) n_total = 1;
+    if (n_total == 0) {
+        fail(OP, L"源目录内没有可复制的文件：%s（通配 %s）", dir, fname);
+        return 1;
+    }
 
     wchar_t hashname[32];
     cfg_get_def(m, L"HASH", L"md5", hashname, 32);
