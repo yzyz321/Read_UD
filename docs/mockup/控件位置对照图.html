@@ -96,7 +96,37 @@
   </div>
 </div>
 
-<div class="legend">
+<div class="frame" style="margin-top:20px">
+  <div class="titlebar">配置窗口（WND_CONFIG · 窗口类 UDK_CFGCLASS）— 默认只读，解锁后可编辑</div>
+
+  <div class="pane"><span class="pane-label">CONFIG 上半部：机型 + 键值编辑</span>
+    <div class="row">
+      <div class="ctl" style="min-width:50px;background:#eee">机型：<b>—</b></div>
+      <div class="status" style="flex:1;height:56px;text-align:left;padding:6px 8px">机型列表（显示名）<b>IDC_CFG_LIST_MODELS 3001</b></div>
+    </div>
+    <div class="row">
+      <div class="ctl" style="min-width:110px">键（下拉选择）<b>IDC_CFG_COMBO_KEY 3011</b></div>
+      <div class="ctl" style="min-width:100px">新值（输入框）<b>IDC_EDIT_CFGVAL 3009</b></div>
+      <div class="ctl" style="min-width:110px">新值（枚举下拉）<b>IDC_CFG_COMBO_VAL 3012</b></div>
+    </div>
+    <div class="row">
+      <div class="status" style="flex:1;text-align:left">说明：读取开关：1=允许读取（读取校验按钮可用、自动流程执行判定）；0=禁用并置灰<b>IDC_STC_CFGHINT 3013</b></div>
+    </div>
+    <div class="row">
+      <div class="ctl" style="min-width:90px">解锁编辑/确认解锁<b>IDC_BTN_UNLOCK 3003</b></div>
+      <div class="ctl" style="min-width:100px">密码（点击后显示）<b>IDC_CFG_EDIT_PASS 3002</b></div>
+      <div class="ctl" style="min-width:80px">保存修改<b>IDC_BTN_SAVECFG 3004</b></div>
+      <div class="ctl" style="min-width:110px">恢复默认设置<b>IDC_BTN_RESETCFG 3010</b></div>
+      <div class="ctl" style="min-width:56px">关闭<b>IDC_BTN_CLOSECFG 3005</b></div>
+    </div>
+    <div class="row"><div class="status" style="flex:1;text-align:left">状态：只读（未授权）/已解锁（可编辑保存）<b>IDC_STC_CFGSTATE 3006</b></div></div>
+  </div>
+
+  <div class="pane"><span class="pane-label">CONFIG 下半部：配置内容展示</span>
+    <div class="content" style="min-height:70px">机型：通用机型（内部键 GENERIC）<br>---- 配置键值（只读展示）----<br>ENABLE_READ=1 / SRCPATH=… / READFILE=…<b>IDC_EDIT_CFGTEXT 3007</b></div>
+  </div>
+</div>
+
   <b>颜色/状态约定</b>
   <table>
     <tr><th>控件</th><th>状态 → 外观</th></tr>
