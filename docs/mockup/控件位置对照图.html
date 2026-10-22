@@ -39,15 +39,19 @@
 <div class="frame">
   <div class="titlebar">U盘拷盘工具 v1.0.0 &nbsp;［出错时标题追加 [!]］ — 窗口类 <b>UDK_MAINCLASS</b></div>
 
-  <div class="pane"><span class="pane-label">PANE_TOP 顶部按钮行</span>
+  <div class="pane"><span class="pane-label">PANE_TOP 第一行：机型下拉 + 操作按钮</span>
     <div class="row">
       <div class="combo">机型下拉（显示名）<b>IDC_COMBO_MODEL 1001</b></div>
       <div class="ctl">开始<b>IDC_BTN_START 1002</b></div>
       <div class="ctl">停止<b>IDC_BTN_STOP 1003</b></div>
+      <div class="ctl">复制/升级<b>IDC_BTN_WRITELABEL 1006</b></div>
+      <div class="ctl">读取校验<b>IDC_BTN_READCHECK 1015</b></div>
+      <div class="ctl">读写测试<b>IDC_BTN_RWTEST 1016</b></div>
       <div class="ctl">格式化<b>IDC_BTN_FORMAT 1004</b></div>
-      <div class="ctl">读取标签<b>IDC_BTN_READLABEL 1005</b></div>
-      <div class="ctl">写入标签/升级<b>IDC_BTN_WRITELABEL 1006</b></div>
       <div class="ctl">配置<b>IDC_BTN_CONFIG 1007</b></div>
+    </div>
+    <div class="row">
+      <div class="ctl">读取标签<b>IDC_BTN_READLABEL 1005</b></div>
       <div class="ctl">☐窗口置顶<b>IDC_CHK_TOPMOST 1008</b></div>
       <div class="ctl">☐快捷键使能<b>IDC_CHK_HOTKEY 1013</b></div>
     </div>
@@ -102,7 +106,10 @@
     <tr><td>IDC_STC_MONSTATUS 监控状态行</td><td>"监控已停止"=红色字；"监控已开启"=绿色字；"文件已找到"=黑色字（副行蓝色）</td></tr>
     <tr><td>IDC_BTN_CLEARCMD 清屏</td><td>点击清空 CMD-A（IDC_EDIT_ENGINE）显示内容，文件日志不受影响</td></tr>
     <tr><td>设备状态 IDC_STC_DEVICE</td><td>粗体显示；始终由 1s 轮询驱动显示插拔信息，不受监控开/关影响</td></tr>
-    <tr><td>IDC_BTN_WRITELABEL 写入标签/升级</td><td><b>专职复制按钮</b>：按 SRCPATH→DSTPATH 复制并 MD5 校验；成功=判定徽标绿色"Copy Complete!"，失败=红色"Copy Failure!"</td></tr>
+    <tr><td>IDC_BTN_WRITELABEL 复制/升级</td><td><b>仅复制</b>（SRCPATH→DSTPATH+MD5）；成功=绿 Copy Complete!，失败=红 Copy Failure!</td></tr>
+    <tr><td>IDC_BTN_READCHECK 读取校验</td><td><b>仅读取+判定</b>（READFILE 通配符 → READRULE 关键字/长度）；PASS 绿 / FAIL 红</td></tr>
+    <tr><td>IDC_BTN_RWTEST 读写测试</td><td><b>仅读写测试</b>（8MB 写读 MD5 比对 + 速率）</td></tr>
+    <tr><td>自动/手动分配</td><td>自动触发动作 = USB识别 + 复制(<b>AUTO_COPY=1</b>) + 读取判定(ENABLE_READ 总是) + 测试(<b>AUTO_TEST=1</b>)；格式化永不自动；手动按钮不受 AUTO_* 限制</td></tr>
     <tr><td>卷标语义</td><td>无独立写卷标功能；卷标仅在<b>格式化</b>时按机型 VOLUME 配置写入</td></tr>
   </table>
   <div class="note">※ 已废弃：IDC_STC_MODE（原"○ 待机/模式标记"），自 v1.0.0-alpha.3 起从界面移除。</div>

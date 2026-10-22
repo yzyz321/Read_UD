@@ -27,6 +27,8 @@
 #define IDC_BTN_MONSTOP     1011   /* 停止监控（监控开启时红色，关闭后置灰）   */
 #define IDC_BTN_EXIT        1012   /* 退出（灰色）                             */
 #define IDC_BTN_CLEARCMD    1014   /* 清屏：清空 IDC_EDIT_ENGINE（CMD-A）信息  */
+#define IDC_BTN_READCHECK   1015   /* 读取校验：读取 + READRULE 关键字判定      */
+#define IDC_BTN_RWTEST      1016   /* 读写测试：写读 MD5 比对 + 速率            */
 #define IDC_STC_MONSTATUS   1102   /* 监控状态行（居中，如"监控已停止"）       */
 #define IDC_STC_MONFILE     1103   /* 命中文件行（居中蓝色，如"找到文件: F:\readme.txt"） */
 

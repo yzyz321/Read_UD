@@ -181,12 +181,14 @@ static void refresh_buttons(void)
     struct { int id; const wchar_t* key; const wchar_t* def; const wchar_t* enablekey; } btns[] = {
         { IDC_BTN_START,      L"BTN_START",      L"开始",     NULL },
         { IDC_BTN_STOP,       L"BTN_STOP",       L"停止",     NULL },
+        { IDC_BTN_WRITELABEL, L"BTN_WRITELABEL", L"复制",     L"ENABLE_WRITE" },
+        { IDC_BTN_READCHECK,  L"BTN_READCHECK",  L"读取校验", L"ENABLE_READ" },
+        { IDC_BTN_RWTEST,     L"BTN_RWTEST",     L"读写测试", NULL },
         { IDC_BTN_FORMAT,     L"BTN_FORMAT",     L"格式化",   L"ENABLE_FORMAT" },
         { IDC_BTN_READLABEL,  L"BTN_READLABEL",  L"读取标签", NULL },
-        { IDC_BTN_WRITELABEL, L"BTN_WRITELABEL", L"写入标签", L"ENABLE_WRITE" },
         { IDC_BTN_CONFIG,     NULL,              L"配置",     NULL },
     };
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 8; i++) {
         HWND hb = GetDlgItem(g_hmain, btns[i].id);
         BOOL enable = !busy;
         if (btns[i].enablekey) enable = enable && cfg_enabled(m, btns[i].enablekey);
@@ -312,10 +314,31 @@ static DWORD WINAPI task_thread(LPVOID p)
            drv, g_cfg.version);
 
     int rc = 0;
+    BOOL manual = (a->trigger == TRIGGER_MANUAL);
     rc |= op_usbinfo(m, drv);
-    if (!CHECK_STOP()) rc |= op_write(m, drv);
+
+    /* 复制：手动触发总是执行；自动触发看 AUTO_COPY（1=自动，0=仅手动点[复制]） */
+    if (!CHECK_STOP()) {
+        if (manual || cfg_get_int(m, L"AUTO_COPY", 1)) {
+            rc |= op_write(m, drv);
+        } else {
+            applog(CH_ENGINE, LOG_INFO,
+                   L"[WRITE] 自动模式且 AUTO_COPY=0，跳过自动复制（可手动点击[复制]）");
+        }
+    }
+
+    /* 读取 + 判定：ENABLE_READ 控制，自动/手动均执行（核心校验） */
     if (!CHECK_STOP()) rc |= op_read(m, drv);
-    if (!CHECK_STOP()) rc |= op_rwtest(m, drv);
+
+    /* 读写测试：手动触发总是执行；自动触发看 AUTO_TEST（1=自动，0=仅手动点[读写测试]） */
+    if (!CHECK_STOP()) {
+        if (manual || cfg_get_int(m, L"AUTO_TEST", 0)) {
+            rc |= op_rwtest(m, drv);
+        } else {
+            applog(CH_ENGINE, LOG_INFO,
+                   L"[RWTEST] 自动模式且 AUTO_TEST=0，跳过自动测试（可手动点击[读写测试]）");
+        }
+    }
 
     applog(CH_ENGINE, rc == 0 ? LOG_OK : (rc == 2 ? LOG_WARN : LOG_ERR),
            L"=== 任务结束（%s） ===", rc == 0 ? L"成功" : rc == 2 ? L"已停止" : L"有错误");
@@ -353,7 +376,8 @@ void task_run_async(int model_index, int trigger)
 
 /* ---------- 单操作线程 ---------- */
 
-enum { OP_FORMAT = 0, OP_LABELREAD = 1, OP_COPY = 2, OP_IDENT = 3 };
+enum { OP_FORMAT = 0, OP_LABELREAD = 1, OP_COPY = 2, OP_IDENT = 3,
+       OP_READ = 4, OP_RWTEST = 5 };
 
 typedef struct {
     int op;
@@ -377,6 +401,8 @@ static DWORD WINAPI op_thread(LPVOID p)
                      (LPARAM)wcs_dup(rc == 0 ? L"Copy Complete!" : L"Copy Failure!"));
         break;
     case OP_IDENT:      g_ident_index++; rc = op_gen_ident(m, a->drive, g_ident_index); break;
+    case OP_READ:       rc = op_read(m, a->drive); break;      /* 判定徽标由 op_read 内部设置 */
+    case OP_RWTEST:     rc = op_rwtest(m, a->drive); break;
     }
     PostMessageW(g_hmain, WM_APP_TASKDONE, rc, 0);
     free(a);
@@ -424,29 +450,29 @@ static void layout(void)
     int rowh = dpi_scale(26);
     int y = m;
 
-    /* PANE_TOP：机型下拉 + 按钮行 + 复选框
-     * 注意：COMBO 的 MoveWindow 高度是"含下拉列表"的总高度，
-     *       必须给足高度，否则下拉列表被压没（表现为下拉不起作用） */
+    /* PANE_TOP 第一行：机型下拉 + 操作按钮
+     * 注意：COMBO 的 MoveWindow 高度是"含下拉列表"的总高度，必须给足 */
     MoveWindow(g_hmodel, m, y, dpi_scale(200), dpi_scale(180), TRUE);
     int x = m + dpi_scale(206);
     struct { int id; int w; } btns[] = {
-        { IDC_BTN_START, 66 }, { IDC_BTN_STOP, 56 }, { IDC_BTN_FORMAT, 66 },
-        { IDC_BTN_READLABEL, 76 }, { IDC_BTN_WRITELABEL, 76 },
+        { IDC_BTN_START, 62 }, { IDC_BTN_STOP, 54 }, { IDC_BTN_WRITELABEL, 56 },
+        { IDC_BTN_READCHECK, 78 }, { IDC_BTN_RWTEST, 78 },
+        { IDC_BTN_FORMAT, 66 }, { IDC_BTN_CONFIG, 56 },
     };
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 7; i++) {
         HWND hb = GetDlgItem(g_hmain, btns[i].id);
         int bw = dpi_scale(btns[i].w);
         MoveWindow(hb, x, y, bw, rowh, TRUE);
         x += bw + dpi_scale(4);
     }
-    MoveWindow(GetDlgItem(g_hmain, IDC_BTN_CONFIG), x, y, dpi_scale(56), rowh, TRUE);
-    x += dpi_scale(62);
-    MoveWindow(g_hchk_top, x, y, dpi_scale(80), rowh, TRUE);
-    x += dpi_scale(84);
-    MoveWindow(g_hchk_hotkey, x, y, dpi_scale(96), rowh, TRUE);
-    x += dpi_scale(100);
 
-    y += rowh + dpi_scale(4);
+    /* PANE_TOP 第二行：读取标签 + 置顶 + 快捷键使能 */
+    int y2 = y + rowh + dpi_scale(4);
+    MoveWindow(GetDlgItem(g_hmain, IDC_BTN_READLABEL), m, y2, dpi_scale(80), rowh, TRUE);
+    MoveWindow(g_hchk_top, m + dpi_scale(86), y2, dpi_scale(80), rowh, TRUE);
+    MoveWindow(g_hchk_hotkey, m + dpi_scale(172), y2, dpi_scale(96), rowh, TRUE);
+
+    y = y2 + rowh + dpi_scale(6);
     /* PANE_LABEL / PANE_STATUS（设备状态 + 出错徽标） */
     MoveWindow(g_hlabel, m, y, W - 2 * m, rowh, TRUE);
     y += rowh + dpi_scale(2);
@@ -788,7 +814,9 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_STOP, L"停止");
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_FORMAT, L"格式化");
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_READLABEL, L"读取标签");
-        MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_WRITELABEL, L"写入标签");
+        MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_WRITELABEL, L"复制");
+        MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_READCHECK, L"读取校验");
+        MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_RWTEST, L"读写测试");
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_CONFIG, L"配置");
         g_hchk_top = MKCTL(L"BUTTON", 0, BS_AUTOCHECKBOX, IDC_CHK_TOPMOST, L"窗口置顶");
         g_hchk_hotkey = MKCTL(L"BUTTON", 0, BS_AUTOCHECKBOX, IDC_CHK_HOTKEY, L"快捷键使能");
@@ -894,6 +922,12 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             break;
         case IDC_BTN_WRITELABEL:
             run_single(OP_COPY);   /* 专职复制：成功绿 Copy Complete! / 失败红 Copy Failure! */
+            break;
+        case IDC_BTN_READCHECK:
+            run_single(OP_READ);   /* 读取 + READRULE 判定：PASS 绿 / FAIL 红 */
+            break;
+        case IDC_BTN_RWTEST:
+            run_single(OP_RWTEST); /* 读写测试：写读 MD5 比对 + 速率 */
             break;
         case IDC_BTN_CONFIG:
             open_config_dialog();
