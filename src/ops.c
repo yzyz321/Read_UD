@@ -34,10 +34,10 @@ static void post_verdict(const wchar_t* verdict)
         PostMessageW(g_hwnd_result, WM_APP_VERDICT, 0, (LPARAM)wcs_dup(verdict));
 }
 
-static void post_filecontent(const wchar_t* text)
+static void post_filecontent(const wchar_t* text, int pane)
 {
     if (g_hwnd_result)
-        PostMessageW(g_hwnd_result, WM_APP_FILECONTENT, 0, (LPARAM)wcs_dup(text));
+        PostMessageW(g_hwnd_result, WM_APP_FILECONTENT, (WPARAM)pane, (LPARAM)wcs_dup(text));
 }
 
 static void post_label(const wchar_t* text)
@@ -84,9 +84,32 @@ static void fail(const wchar_t* op, const wchar_t* fmt, ...)
  * write - 写入（COPY=简单复制；PROCESSED=v1.0 预留提示）
  * ============================================================ */
 
-static BOOL copy_one_file(const wchar_t* src, const wchar_t* dst)
+/* ---------- 复制进度（CopyFileExW 回调：按字节推进，复制大文件时进度条实时移动） ---------- */
+typedef struct {
+    unsigned __int64 total_all;    /* 本次任务全部文件总字节数 */
+    unsigned __int64 done_before;  /* 当前文件之前已完成字节   */
+    int last_pct;
+} COPYCTX;
+
+static DWORD CALLBACK copy_prog_cb(LARGE_INTEGER TotalFileSize,
+                                   LARGE_INTEGER TotalBytesTransferred,
+                                   LARGE_INTEGER StreamSize,
+                                   LARGE_INTEGER StreamBytesTransferred,
+                                   DWORD dwStreamNumber, DWORD dwCallbackReason,
+                                   HANDLE hSourceFile, HANDLE hDestinationFile,
+                                   LPVOID lpData)
 {
-    return CopyFileW(src, dst, FALSE) != 0;
+    (void)TotalFileSize; (void)StreamSize; (void)StreamBytesTransferred;
+    (void)dwStreamNumber; (void)dwCallbackReason;
+    (void)hSourceFile; (void)hDestinationFile;
+    COPYCTX* c = (COPYCTX*)lpData;
+    if (c->total_all) {
+        unsigned __int64 done = c->done_before + (unsigned __int64)TotalBytesTransferred.QuadPart;
+        int pct = (int)(done * 100 / c->total_all);
+        if (pct > 100) pct = 100;
+        if (pct != c->last_pct) { c->last_pct = pct; post_progress(pct); }
+    }
+    return PROGRESS_CONTINUE;
 }
 
 int op_write(const CFGMODEL* m, wchar_t drive)
@@ -175,15 +198,20 @@ int op_write(const CFGMODEL* m, wchar_t drive)
     }
 
     int n_ok = 0, n_fail = 0, n_total = 0;
-    /* 先计数（只统计文件，目录不参与复制）用于进度 */
+    /* 先计数（只统计文件）并累计总字节数，用于按字节推进度 */
+    unsigned __int64 total_bytes = 0, done_bytes = 0;
     do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) n_total++;
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            n_total++;
+            total_bytes += ((unsigned __int64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+        }
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     if (n_total == 0) {
         fail(OP, L"源目录内没有可复制的文件：%s（通配 %s）", dir, fname);
         return 1;
     }
+    post_progress(0);
 
     wchar_t hashname[32];
     cfg_get_def(m, L"HASH", L"md5", hashname, 32);
@@ -199,11 +227,16 @@ int op_write(const CFGMODEL* m, wchar_t drive)
         path_join(srcfile, MAX_PATH, dir, fd.cFileName);
         path_join(dstfile, MAX_PATH, dstdir, fd.cFileName);
 
-        /* 目标已存在则覆盖（CopyFileW 第二参数 FALSE 即覆盖） */
+        /* 目标已存在则覆盖（CopyFileExW 复制中回调按字节上报进度） */
         if (GetFileAttributesW(dstfile) != INVALID_FILE_ATTRIBUTES)
             applog(CH_ENGINE, LOG_INFO, L"[%s] %s 已存在，覆盖", OP, fd.cFileName);
 
-        if (copy_one_file(srcfile, dstfile)) {
+        COPYCTX ctx;
+        ctx.total_all = total_bytes;
+        ctx.done_before = done_bytes;
+        ctx.last_pct = -1;
+        if (CopyFileExW(srcfile, dstfile, copy_prog_cb, &ctx, NULL, 0)) {
+            done_bytes += ((unsigned __int64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
             n_ok++;
             applog(CH_ENGINE, LOG_OK, L"[%s] %s 已复制", OP, fd.cFileName);
             if (use_hash) {
@@ -290,16 +323,26 @@ int op_read(const CFGMODEL* m, wchar_t drive)
         applog(CH_ENGINE, LOG_WARN, L"[%s] REGEX 模式为后续版本支持，本次按 WILDCARD 处理", OP);
     }
 
-    /* 扫描 U 盘根目录 */
+    /* 扫描 U 盘根目录（READFILE 支持子目录前缀，如 SYSTEM\PAW6K-LSN 或 SYSTEM\*.txt） */
+    wchar_t dirpart[CFG_VAL_LEN] = L"", filepat[CFG_VAL_LEN];
+    lstrcpynW(filepat, pat, CFG_VAL_LEN);
+    {
+        wchar_t* sl = wcsrchr(filepat, L'\\');
+        if (sl) { *sl = 0; lstrcpynW(dirpart, filepat, CFG_VAL_LEN); lstrcpynW(filepat, sl + 1, CFG_VAL_LEN); }
+    }
     wchar_t findpat[MAX_PATH];
-    _snwprintf(findpat, MAX_PATH, L"%c:\\%s", drive, pat);
+    if (dirpart[0])
+        _snwprintf(findpat, MAX_PATH, L"%c:\\%s\\%s", drive, dirpart, filepat);
+    else
+        _snwprintf(findpat, MAX_PATH, L"%c:\\%s", drive, filepat);
     findpat[MAX_PATH - 1] = 0;
 
     applog(CH_ENGINE, LOG_INFO, L"[%s] 扫描匹配文件：%s（策略 %s）", OP, findpat, policy);
 
-    wchar_t best[MAX_PATH] = L"";
+    wchar_t best[MAX_PATH] = L"";      /* 含子目录前缀的相对路径 */
+    wchar_t best_name[MAX_PATH] = L""; /* 纯文件名（通配符捕获用） */
     FILETIME best_ft = { 0, 0 };
-    wchar_t hits[16][MAX_PATH];
+    wchar_t hits[16][MAX_PATH];        /* 含前缀的相对路径 */
     int nhits = 0;
 
     WIN32_FIND_DATAW fd;
@@ -308,24 +351,34 @@ int op_read(const CFGMODEL* m, wchar_t drive)
         post_verdict(L"FAIL");
         fail(OP, L"未找到匹配文件（%s）", pat);
         wchar_t empty[2] = L"";
-        post_filecontent(empty);
+        post_filecontent(empty, 0);
+        post_filecontent(empty, 1);
         return 1;
     }
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        if (nhits < 16) lstrcpynW(hits[nhits++], fd.cFileName, MAX_PATH);
+        wchar_t rel[MAX_PATH];
+        if (dirpart[0]) _snwprintf(rel, MAX_PATH, L"%s\\%s", dirpart, fd.cFileName);
+        else            lstrcpynW(rel, fd.cFileName, MAX_PATH);
+        if (nhits < 16) lstrcpynW(hits[nhits++], rel, MAX_PATH);
         if (_wcsicmp(policy, L"NEWEST") == 0) {
             if (CompareFileTime(&fd.ftLastWriteTime, &best_ft) > 0) {
                 best_ft = fd.ftLastWriteTime;
-                lstrcpynW(best, fd.cFileName, MAX_PATH);
+                lstrcpynW(best, rel, MAX_PATH);
+                lstrcpynW(best_name, fd.cFileName, MAX_PATH);
             }
         } else if (_wcsicmp(policy, L"FIRST") == 0) {
-            if (!best[0]) lstrcpynW(best, fd.cFileName, MAX_PATH);
+            if (!best[0]) { lstrcpynW(best, rel, MAX_PATH); lstrcpynW(best_name, fd.cFileName, MAX_PATH); }
         }
     } while (FindNextFileW(h, &fd));
     FindClose(h);
 
-    if (!best[0] && nhits > 0) lstrcpynW(best, hits[0], MAX_PATH);
+    if (!best[0] && nhits > 0) {
+        /* FIRST 之外兜底：取第一个命中（hits 已含前缀，拆回纯文件名） */
+        lstrcpynW(best, hits[0], MAX_PATH);
+        const wchar_t* bn = wcsrchr(best, L'\\');
+        lstrcpynW(best_name, bn ? bn + 1 : best, MAX_PATH);
+    }
 
     if (_wcsicmp(policy, L"STRICT") == 0) {
         if (nhits > 1) {
@@ -348,13 +401,9 @@ int op_read(const CFGMODEL* m, wchar_t drive)
     applog(CH_ENGINE, LOG_INFO, L"[%s] 命中文件：%s", OP, best);
     post_moninfo(L"文件已找到", fullpath);
 
-    /* 通配符可变部分捕获 */
+    /* 通配符可变部分捕获（对纯文件名模式与纯文件名比较） */
     wchar_t cap[128] = L"";
-    wchar_t basepat[CFG_VAL_LEN];
-    lstrcpynW(basepat, pat, CFG_VAL_LEN);
-    wchar_t* sl = wcsrchr(basepat, L'\\');
-    if (sl) memmove(basepat, sl + 1, (wcslen(sl + 1) + 1) * sizeof(wchar_t));
-    pat_match_capture(basepat, best, cap, 128);
+    pat_match_capture(filepat, best_name, cap, 128);
     if (cap[0]) applog(CH_ENGINE, LOG_INFO, L"[%s] 可变部分捕获 ${MATCH_1}=%s", OP, cap);
 
     /* 读取内容 */
@@ -371,16 +420,36 @@ int op_read(const CFGMODEL* m, wchar_t drive)
     wchar_t why[256];
     BOOL pass = apply_rules(rules, text, why, 256);
 
+    /* 第二命中文件 → 右窗格（IDC_EDIT_FILE2 1503），与主文件同时显示 */
+    {
+        wchar_t empty[2] = L"";
+        post_filecontent(empty, 1);          /* 先清右窗格 */
+        for (int i = 0; i < nhits; i++) {
+            if (_wcsicmp(hits[i], best) == 0) continue;
+            wchar_t p2[MAX_PATH];
+            _snwprintf(p2, MAX_PATH, L"%c:\\%s", drive, hits[i]);
+            wchar_t* t2 = NULL;
+            if (read_file_text(p2, &t2) && t2) {
+                applog(CH_ENGINE, LOG_INFO, L"[%s] 第二文件：%s（右窗格）", OP, hits[i]);
+                post_filecontent(t2, 1);
+                free(t2);
+            } else {
+                applog(CH_ENGINE, LOG_WARN, L"[%s] 第二文件读取失败：%s（错误码 %lu）", OP, hits[i], GetLastError());
+            }
+            break;   /* 只取一个第二命中 */
+        }
+    }
+
     if (pass) {
         applog(CH_ENGINE, LOG_OK, L"[%s] 判定 PASS（规则：%s）", OP, rules && rules[0] ? rules : L"无");
         post_verdict(L"PASS");
-        post_filecontent(text);
+        post_filecontent(text, 0);
     } else {
         applog(CH_ENGINE, LOG_ERR, L"[%s] 判定 FAIL：%s", OP, why);
         post_verdict(L"FAIL");
         wchar_t msg[300];
         _snwprintf(msg, 300, L"判定失败：%s", why);
-        post_filecontent(msg);
+        post_filecontent(msg, 0);
         post_error(TRUE, why);
         free(text);
         return 1;

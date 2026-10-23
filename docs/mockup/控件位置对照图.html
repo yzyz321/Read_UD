@@ -69,8 +69,9 @@
     </div>
   </div>
 
-  <div class="pane"><span class="pane-label">PANE_TASK 进度条</span>
-    <div class="row"><div class="progress"><i></i></div><b style="font-size:11px;color:#666">IDC_PBAR_TASK 1301</b></div>
+  <div class="pane"><span class="pane-label">PANE_TASK 进度条（前提示 + 尾百分比）</span>
+    <div class="row"><div class="ctl" style="min-width:60px">任务进度：<b>IDC_STC_PROGTITLE 1106</b></div><div class="progress" style="flex:1"><i></i></div><b style="font-size:11px;color:#666">IDC_PBAR_TASK 1301</b><div class="ctl" style="min-width:40px">42%<b>IDC_STC_PROGPCT 1107</b></div></div>
+    <div style="font-size:11px;color:#888">复制用 CopyFileExW 按字节回调推进度，大文件复制中进度条实时移动（alpha.16 起）</div>
   </div>
 
   <div class="pane"><span class="pane-label">PANE_CMDS 双控制台（左右并排）</span>
@@ -87,7 +88,11 @@
       <div class="ctl">清屏<b>IDC_BTN_CLEARCMD 1014</b></div>
     </div>
     <div class="row"><div class="status" style="flex:1;color:#005ac8">找到文件: F:\readme.txt<b>IDC_STC_MONFILE 1103</b>（居中蓝色）</div></div>
-    <div class="row"><div class="content" style="flex:1">读取内容显示区<b>IDC_EDIT_FILE 1502</b></div></div>
+    <div class="row" style="display:flex;gap:6px">
+      <div class="content" style="flex:1">第一命中文件内容<b>IDC_EDIT_FILE 1502</b></div>
+      <div class="content" style="flex:1">第二命中文件内容<b>IDC_EDIT_FILE2 1503</b>（无则空）</div>
+    </div>
+    <div style="font-size:11px;color:#888">主窗口纵向加高（alpha.16 起 880×760），内容区不滚动约可见 10 行</div>
     <div class="row" style="justify-content:center">
       <div class="ctl btn-green" style="min-width:88px">开始监控<b>IDC_BTN_MONSTART 1010</b></div>
       <div class="ctl btn-red" style="min-width:88px">停止监控<b>IDC_BTN_MONSTOP 1011</b></div>
