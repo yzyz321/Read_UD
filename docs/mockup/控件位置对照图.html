@@ -87,7 +87,10 @@
       <div class="status" style="flex:1"><span style="color:#d00">监控已停止（红）</span> / <span style="color:#090">监控已开启（绿）</span> / 文件已找到<b>IDC_STC_MONSTATUS 1102</b></div>
       <div class="ctl">清屏<b>IDC_BTN_CLEARCMD 1014</b></div>
     </div>
-    <div class="row"><div class="status" style="flex:1;color:#005ac8">找到文件: F:\readme.txt<b>IDC_STC_MONFILE 1103</b>（居中蓝色）</div></div>
+    <div class="row" style="display:flex;gap:6px">
+      <div class="status" style="flex:1;color:#005ac8">找到文件: F:\readme.txt<b>IDC_STC_MONFILE 1103</b>（左窗格专属提示）</div>
+      <div class="status" style="flex:1;color:#005ac8">第二文件: F:\…（右窗格专属）<b>IDC_STC_MONFILE2 1108</b></div>
+    </div>
     <div class="row" style="display:flex;gap:6px">
       <div class="content" style="flex:1">第一命中文件内容<b>IDC_EDIT_FILE 1502</b></div>
       <div class="content" style="flex:1">第二命中文件内容<b>IDC_EDIT_FILE2 1503</b>（无则空）</div>
@@ -139,7 +142,7 @@
     <tr><td>IDC_BTN_MONSTOP 停止监控</td><td>监控中=红色可用；监控关闭=浅灰禁用（点击同时中止任务）</td></tr>
     <tr><td>IDC_BTN_EXIT 退出</td><td>常灰可用；任务运行中退出需确认</td></tr>
     <tr><td>IDC_STC_ERROR 状态徽标</td><td><b>正常=绿字"✓ …"</b>（插盘时/任务完成时）；<b>出错=红字"✕ 出错：原因"</b>+标题加[!]；每次插盘先熄灭再显示新盘状态；任务失败时红色由 ops 置位</td></tr>
-    <tr><td>IDC_STC_LABEL 标签行</td><td><b>随插拔实时刷新</b>：显示当前各盘卷标，如"标签：F: PHY-32"；多盘逐个列出；无盘显示"（无磁盘）"</td></tr>
+    <tr><td>IDC_STC_LABEL 标签行</td><td><b>随插拔实时刷新</b>：显示当前各盘卷标 + <b>USB 硬件标识</b>，如"标签：F: PHY-32 [VID:0951 PID:1666 SN:001CC0EC34F1…]"（VID/PID/序列号区分同型号不同个体）；多盘逐个列出；无盘显示"（无磁盘）"</td></tr>
     <tr><td>IDC_STC_INSERTCOUNT 插拔计数器（1017，状态行右端）</td><td><b>仅监控开启时计数</b>：每插入 U 盘 +1（拔出不计）；[停止监控] 即停止计数（数值保留）；显示"计数:0000"粗体 4 位，超 9999 回 0000 循环；启动 0、退出不存、启动时已在盘不计</td></tr>
     <tr><td>顶部 8 个操作按钮（1002~1016）</td><td><b>统一尺寸等宽等高</b>，文字水平/垂直居中；按钮显示名由 BTN_* 配置，禁用时置灰</td></tr>
     <tr><td>配置窗口键名框 3011</td><td><b>可编辑下拉（CBS_DROPDOWN）</b>：列表选择回填当前值；也可手输列表外的新键名，"说明："行同步提示；配合值输入框 3009 与 [保存修改] 写入 ini</td></tr>
