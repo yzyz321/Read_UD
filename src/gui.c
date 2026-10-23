@@ -665,7 +665,7 @@ static void layout(void)
 static BOOL g_cfg_unlocked = FALSE;
 static HWND g_hcfg = NULL, g_hcfglist = NULL, g_hcfgtext = NULL, g_hcfgpass = NULL,
             g_hcfgstate = NULL, g_hcfgkey = NULL, g_hcfgval = NULL,
-            g_hcfgvalcombo = NULL, g_hcfghint = NULL;
+            g_hcfgvalcombo = NULL, g_hcfghint = NULL, g_hcfgvallbl = NULL;
 static int g_cfg_failcount = 0;
 
 /* 键的简要说明（配置窗口提示行） */
@@ -682,7 +682,7 @@ static const wchar_t* key_hint(const wchar_t* key)
         { L"WRITEMODE",       L"写入方式：COPY=简单复制（推荐）；PROCESSED=按台生成不同文件（后续版本）" },
         { L"SRCPATH",         L"复制源：绝对路径或相对路径（相对=exe 同目录），支持 * 与 ? 通配符" },
         { L"DSTPATH",         L"U盘内目标目录：目录不存在时自动逐级建立；\\ 表示U盘根目录" },
-        { L"READFILE",        L"读取文件名：U盘根目录，支持通配符，如 8685????.txt；留空=跳过读取" },
+        { L"READFILE",        L"读取文件：支持子目录与通配符，如 SYSTEM\\PAW6K-LSN、8685????.txt、SYSTEM\\*.txt；留空=跳过读取" },
         { L"MATCH_POLICY",    L"多命中取舍：NEWEST=取最新 / FIRST=第一个 / STRICT=多命中判失败并列出" },
         { L"READPATTERN",     L"匹配方式：WILDCARD=通配符（推荐）；REGEX=正则（后续版本支持）" },
         { L"READRULE",        L"判定规则（分号分隔）：MUST_CONTAIN:关键字 ; MIN_LEN:最小长度；PASS 才显示内容" },
@@ -752,7 +752,7 @@ static void cfg_sync_value_editor_ex(BOOL fill_value)
     int mi = (int)SendMessageW(g_hcfglist, LB_GETCURSEL, 0, 0);
     if (mi < 0 || mi >= g_cfg.nmodels) return;
 
-    SetWindowTextW(g_hcfghint, key_hint(key));   /* 键值说明提示 */
+    SetWindowTextW(g_hcfghint, key_hint(key));   /* 键值说明提示（后文按锁定状态补充） */
     CFGMODEL* m = &g_cfg.models[mi];
     const wchar_t* cur = cfg_get(m, key);
     if (!cur) cur = L"";
@@ -760,6 +760,7 @@ static void cfg_sync_value_editor_ex(BOOL fill_value)
     const wchar_t* vals[4];
     int n = key_enum_values(key, vals, 4);
     if (n > 0) {
+        SetWindowTextW(g_hcfgvallbl, L"新值（下拉选择）：");
         ShowWindow(g_hcfgvalcombo, SW_SHOW);
         ShowWindow(g_hcfgval, SW_HIDE);
         SendMessageW(g_hcfgvalcombo, CB_RESETCONTENT, 0, 0);
@@ -770,9 +771,22 @@ static void cfg_sync_value_editor_ex(BOOL fill_value)
         }
         SendMessageW(g_hcfgvalcombo, CB_SETCURSEL, pick, 0);
     } else {
+        /* 自由键（SRCPATH/DSTPATH/READFILE/READRULE/VOLUME/BTN_* 等）→ 输入框，
+         * 无论锁定与否都回填当前值（锁定时灰显可看不可改） */
+        SetWindowTextW(g_hcfgvallbl, L"新值（输入）：");
         ShowWindow(g_hcfgvalcombo, SW_HIDE);
         ShowWindow(g_hcfgval, SW_SHOW);
         if (fill_value) SetWindowTextW(g_hcfgval, cur);
+    }
+    /* 说明行：未解锁时明示输入框为只读及解锁方法 */
+    const wchar_t* h = key_hint(key);
+    if (g_cfg_unlocked) {
+        SetWindowTextW(g_hcfghint, h);
+    } else {
+        wchar_t hintbuf[512];
+        _snwprintf(hintbuf, 512,
+                   L"%s　——　锁定中：新值框灰色只读，点[解锁编辑]输入密码后可修改", h);
+        SetWindowTextW(g_hcfghint, hintbuf);
     }
     cfg_apply_lock();
 }
@@ -892,7 +906,7 @@ static void cfg_create_controls(HWND h)
     CFGCOMBO(IDC_CFG_COMBO_KEY, m + dpi_scale(165), y, dpi_scale(320),
              rowh + dpi_scale(150), CBS_DROPDOWN);   /* 可输入：允许键入列表外的新键名 */
     y += rowh + dpi_scale(4);
-    CFGSTC(0, L"新值：", m, y + dpi_scale(4), dpi_scale(160), rowh);
+    CFGSTC(IDC_STC_CFGVALLBL, L"新值（下拉选择）：", m, y + dpi_scale(4), dpi_scale(160), rowh);
     CFGEDIT(IDC_EDIT_CFGVAL, m + dpi_scale(165), y, dpi_scale(320), rowh, ES_AUTOHSCROLL);
     CFGCOMBO(IDC_CFG_COMBO_VAL, m + dpi_scale(165), y, dpi_scale(320),
              rowh + dpi_scale(150), CBS_DROPDOWNLIST);
@@ -939,6 +953,7 @@ static LRESULT CALLBACK cfg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         g_hcfgval = GetDlgItem(h, IDC_EDIT_CFGVAL);
         g_hcfgvalcombo = GetDlgItem(h, IDC_CFG_COMBO_VAL);
         g_hcfghint = GetDlgItem(h, IDC_STC_CFGHINT);
+        g_hcfgvallbl = GetDlgItem(h, IDC_STC_CFGVALLBL);
         for (int i = 0; i < g_cfg.nmodels; i++)
             SendMessageW(g_hcfglist, LB_ADDSTRING, 0, (LPARAM)g_cfg.models[i].display);
         SendMessageW(g_hcfglist, LB_SETCURSEL, 0, 0);
