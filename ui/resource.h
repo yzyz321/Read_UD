@@ -44,6 +44,8 @@
 
 /* ---------- PANE_TASK ---------- */
 #define IDC_PBAR_TASK       1301   /* 进度条                                   */
+#define IDC_STC_PROGTITLE   1106   /* 进度条前提示文字（"任务进度："）          */
+#define IDC_STC_PROGPCT     1107   /* 进度条尾百分比显示（"42%"）               */
 
 /* ---------- PANE_CMDS ---------- */
 #define IDC_EDIT_ENGINE     1401   /* CMD-A 操作引擎输出                       */
@@ -51,7 +53,8 @@
 
 /* ---------- PANE_FILE ---------- */
 #define IDC_STC_READVERDICT 1501   /* 读取判定徽标 PASS/FAIL                   */
-#define IDC_EDIT_FILE       1502   /* READFILE 内容显示                        */
+#define IDC_EDIT_FILE       1502   /* READFILE 内容显示（左窗格，命中第一个文件）*/
+#define IDC_EDIT_FILE2      1503   /* 内容显示右窗格（命中第二个文件）          */
 
 /* ---------- 热键 ---------- */
 #define ID_HOTKEY_T         2001   /* T = 读写测试                             */
