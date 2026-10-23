@@ -27,9 +27,9 @@ static HINSTANCE g_hinst = NULL;
 static HWND g_hmain = NULL;
 static HWND g_hmodel = NULL, g_hlabel = NULL, g_hdev = NULL,
             g_herr = NULL, g_hprog = NULL, g_hcmd[2] = { NULL, NULL },
-            g_hverdict = NULL, g_hfile = NULL, g_hchk_top = NULL,
+            g_hverdict = NULL, g_hfile[2] = { NULL, NULL }, g_hchk_top = NULL,
             g_hchk_hotkey = NULL, g_hautomode = NULL, g_hsrcpath = NULL,
-            g_hcount = NULL;
+            g_hcount = NULL, g_hprogtitle = NULL, g_hprogpct = NULL;
 static volatile LONG g_inscount = 0;    /* 插拔计数器：每次插入 +1（不持久化，退出即清零） */
 static BOOL g_hotkey_enabled = FALSE;   /* 快捷键使能（IDC_CHK_HOTKEY） */
 static HFONT g_font = NULL, g_font_mono = NULL, g_font_bold = NULL;
@@ -118,7 +118,8 @@ static void dpi_update_font(void)
         EnumChildWindows(g_hmain, font_enum, (LPARAM)g_font);
         if (g_hcmd[0]) SendMessageW(g_hcmd[0], WM_SETFONT, (WPARAM)g_font_mono, TRUE);
         if (g_hcmd[1]) SendMessageW(g_hcmd[1], WM_SETFONT, (WPARAM)g_font_mono, TRUE);
-        if (g_hfile)   SendMessageW(g_hfile, WM_SETFONT, (WPARAM)g_font_mono, TRUE);
+        if (g_hfile[0]) SendMessageW(g_hfile[0], WM_SETFONT, (WPARAM)g_font_mono, TRUE);
+        if (g_hfile[1]) SendMessageW(g_hfile[1], WM_SETFONT, (WPARAM)g_font_mono, TRUE);
         if (g_hdev)    SendMessageW(g_hdev, WM_SETFONT, (WPARAM)g_font_bold, TRUE);  /* 设备状态粗体 */
         if (g_hcount)  SendMessageW(g_hcount, WM_SETFONT, (WPARAM)g_font_bold, TRUE); /* 插拔计数粗体 */
     }
@@ -570,11 +571,12 @@ static void layout(void)
         x += opw + dpi_scale(4);
     }
 
-    /* PANE_TOP 第二行：读取标签 + 置顶 + 快捷键使能（读取标签与第一行按钮同宽） */
+    /* PANE_TOP 第二行：读取标签 + 置顶 + 快捷键使能（按钮与复选框拉开间距） */
     int y2 = y + rowh + dpi_scale(4);
     MoveWindow(GetDlgItem(g_hmain, IDC_BTN_READLABEL), m, y2, opw, rowh, TRUE);
-    MoveWindow(g_hchk_top, m + dpi_scale(86), y2, dpi_scale(80), rowh, TRUE);
-    MoveWindow(g_hchk_hotkey, m + dpi_scale(172), y2, dpi_scale(96), rowh, TRUE);
+    int chkx = m + opw + dpi_scale(12);
+    MoveWindow(g_hchk_top, chkx, y2, dpi_scale(80), rowh, TRUE);
+    MoveWindow(g_hchk_hotkey, chkx + dpi_scale(80) + dpi_scale(8), y2, dpi_scale(96), rowh, TRUE);
 
     y = y2 + rowh + dpi_scale(6);
     /* PANE_LABEL 标签行 */
@@ -596,8 +598,12 @@ static void layout(void)
     MoveWindow(g_herr, m + devw + dpi_scale(6), y,
                W - 2 * m - devw - dpi_scale(6), rowh, TRUE);
     y += rowh + dpi_scale(6);
-    /* PANE_TASK 进度条 */
-    MoveWindow(g_hprog, m, y + dpi_scale(5), W - 2 * m, dpi_scale(16), TRUE);
+    /* PANE_TASK 进度条：前提示文字 + 进度条 + 尾百分比 */
+    int lblw = dpi_scale(66), pctw = dpi_scale(44);
+    MoveWindow(g_hprogtitle, m, y + dpi_scale(3), lblw, rowh, TRUE);
+    MoveWindow(g_hprog, m + lblw + dpi_scale(6), y + dpi_scale(5),
+               W - 2 * m - lblw - pctw - dpi_scale(12), dpi_scale(16), TRUE);
+    MoveWindow(g_hprogpct, W - m - pctw, y + dpi_scale(3), pctw, rowh, TRUE);
     y += rowh + dpi_scale(10);
 
     /* PANE_CMDS：CMD-A / CMD-B 左右并排 */
@@ -624,7 +630,11 @@ static void layout(void)
     int btnrow = rowh + dpi_scale(8);
     int fileh = H - y - btnrow - m * 2;
     if (fileh < dpi_scale(40)) fileh = dpi_scale(40);
-    MoveWindow(g_hfile, m, y, W - 2 * m, fileh, TRUE);
+    /* PANE_FILE：文件内容左右双窗格（与 PANE_CMDS 同布局），左=第一命中，右=第二命中 */
+    int fhalf = (W - 2 * m - dpi_scale(6)) / 2;
+    MoveWindow(g_hfile[0], m, y, fhalf, fileh, TRUE);
+    MoveWindow(g_hfile[1], m + fhalf + dpi_scale(6), y,
+               W - 2 * m - fhalf - dpi_scale(6), fileh, TRUE);
     y += fileh + dpi_scale(6);
 
     /* 三个监控按钮：水平居中 */
@@ -1095,6 +1105,8 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         g_hdev = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_DEVICE, L"设备状态：检测中…");
         g_herr = MKCTL(L"RICHEDIT50W", 0, ES_READONLY, IDC_STC_ERROR, L"");
         g_hprog = MKCTL(PROGRESS_CLASSW, 0, PBS_SMOOTH, IDC_PBAR_TASK, L"");
+        g_hprogtitle = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_PROGTITLE, L"任务进度：");
+        g_hprogpct = MKCTL(L"STATIC", 0, SS_RIGHT, IDC_STC_PROGPCT, L"0%");
 
         /* 底部监控窗格 */
         g_hmonstatus = MKCTL(L"RICHEDIT50W", 0, ES_READONLY | ES_CENTER, IDC_STC_MONSTATUS, L"监控已停止");
@@ -1108,8 +1120,10 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         g_hcmd[1] = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
                           ES_MULTILINE | ES_READONLY | WS_VSCROLL, IDC_EDIT_IDENT, L"");
         g_hverdict = MKCTL(L"RICHEDIT50W", 0, ES_READONLY | ES_CENTER, IDC_STC_READVERDICT, L"");
-        g_hfile = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
-                        ES_MULTILINE | ES_READONLY | WS_VSCROLL, IDC_EDIT_FILE, L"");
+        g_hfile[0] = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
+                           ES_MULTILINE | ES_READONLY | WS_VSCROLL, IDC_EDIT_FILE, L"");
+        g_hfile[1] = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
+                           ES_MULTILINE | ES_READONLY | WS_VSCROLL, IDC_EDIT_FILE2, L"");
         #undef MKCTL
         return 0;
     }
@@ -1276,9 +1290,13 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         free((void*)lp);
         return 0;
     }
-    case WM_APP_PROGRESS:
+    case WM_APP_PROGRESS: {
         SendMessageW(g_hprog, PBM_SETPOS, wp, 0);
+        wchar_t pt[16];
+        _snwprintf(pt, 16, L"%d%%", (int)wp);
+        SetWindowTextW(g_hprogpct, pt);
         return 0;
+    }
     case WM_APP_DEVCOUNT: {
         DWORD mask = (DWORD)wp;
         BOOL inserted = lp != 0;
@@ -1293,6 +1311,11 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                 set_error_badge(FALSE, NULL);
                 SetWindowTextW(g_hcmd[0], L"");
                 set_ok_badge(L"");   /* 绿色正常提示（后续任务出错会转红） */
+                /* 进度条与文件内容窗格同步复位，本轮从零显示 */
+                SendMessageW(g_hprog, PBM_SETPOS, 0, 0);
+                SetWindowTextW(g_hprogpct, L"0%");
+                SetWindowTextW(g_hfile[0], L"");
+                SetWindowTextW(g_hfile[1], L"");
                 /* 插拔计数器：仅监控开启时计数；4 位循环（9999→0000），退出程序不保存 */
                 if (g_monitoring) {
                     InterlockedIncrement(&g_inscount);
@@ -1320,10 +1343,12 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         free(s);
         return 0;
     }
-    case WM_APP_FILECONTENT:
-        SetWindowTextW(g_hfile, (wchar_t*)lp ? (wchar_t*)lp : L"");
+    case WM_APP_FILECONTENT: {
+        int pane = (wp == 1) ? 1 : 0;
+        SetWindowTextW(g_hfile[pane], (wchar_t*)lp ? (wchar_t*)lp : L"");
         free((void*)lp);
         return 0;
+    }
     case WM_APP_LABEL: {
         wchar_t txt[600];
         _snwprintf(txt, 600, L"标签：%s", (wchar_t*)lp ? (wchar_t*)lp : L"");
@@ -1418,7 +1443,7 @@ int gui_run(HINSTANCE hInst, int nShow)
 
     RECT wa;
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
-    int W = dpi_scale(880), H = dpi_scale(640);
+    int W = dpi_scale(880), H = dpi_scale(760);   /* 纵向加高：文件内容区不滚动可显示 10 行以上 */
     int x = wa.right > W ? (wa.right - W) / 2 : CW_USEDEFAULT;
     int y2 = wa.bottom > H ? (wa.bottom - H) / 3 : CW_USEDEFAULT;
 
