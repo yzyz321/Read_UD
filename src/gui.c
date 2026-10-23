@@ -41,7 +41,7 @@ static int g_ident_index = 0;       /* 标识生成计数 */
 /* ---------- 监控窗格（PANE_BOTTOM） ---------- */
 static volatile LONG g_monitoring = 0;              /* 监控开关 */
 static HWND g_hmonbtn[3] = { NULL, NULL, NULL };    /* 开始/停止/退出 */
-static HWND g_hmonstatus = NULL, g_hmonfile = NULL;
+static HWND g_hmonstatus = NULL, g_hmonfile = NULL, g_hmonfile2 = NULL;
 static const COLORREF g_btncol[3] = {
     RGB(0, 150, 0),     /* 开始监控：绿 */
     RGB(210, 0, 0),     /* 停止监控：红 */
@@ -382,15 +382,24 @@ static void update_device_text(void)
         if (g_dev_mask & (1u << (d - L'A'))) {
             DEVINFO di;
             dev_get_info(d, &di);
-            wchar_t one[160];
-            _snwprintf(one, 160, L"%c: [%s|%.1fGB]  ", d,
+            wchar_t one[320];
+            _snwprintf(one, 320, L"%c: [%s|%.1fGB]  ", d,
                        di.volume[0] ? di.volume : L"无卷标",
                        di.total_bytes / 1073741824.0);
             lstrcatW(txt, one);
-            _snwprintf(one, 160, L"%s%c: ", any ? L"  " : L"", d);
+            /* 标签行附 USB 硬件标识：区分同型号的不同个体 */
+            _snwprintf(one, 320, L"%s%c: ", any ? L"  " : L"", d);
             if (di.volume[0]) {
                 lstrcatW(lbl, one);
                 lstrcatW(lbl, di.volume);
+                lab = TRUE;
+            }
+            if (di.vidpid[0]) {
+                _snwprintf(one, 320, L" [%s", di.vidpid);
+                if (di.usbserial[0]) _snwprintf(one + lstrlenW(one), 320 - lstrlenW(one),
+                                                L" SN:%.16s", di.usbserial);
+                lstrcatW(lbl, one);
+                lstrcatW(lbl, L"]");
                 lab = TRUE;
             }
             any = TRUE;
@@ -624,14 +633,17 @@ static void layout(void)
     MoveWindow(GetDlgItem(g_hmain, IDC_BTN_CLEARCMD),
                W - m - clr_w, y, clr_w, rowh, TRUE);
     y += rowh + dpi_scale(2);
-    MoveWindow(g_hmonfile, m, y, W - 2 * m, rowh, TRUE);
+    /* PANE_FILE：文件内容左右双窗格（与 PANE_CMDS 同布局），左=第一命中，右=第二命中
+     * 命中文件提示行也分左右：1103 为左窗格专属，1108 为右窗格专属 */
+    int fhalf = (W - 2 * m - dpi_scale(6)) / 2;
+    MoveWindow(g_hmonfile, m, y, fhalf, rowh, TRUE);
+    MoveWindow(g_hmonfile2, m + fhalf + dpi_scale(6), y,
+               W - 2 * m - fhalf - dpi_scale(6), rowh, TRUE);
     y += rowh + dpi_scale(2);
 
     int btnrow = rowh + dpi_scale(8);
     int fileh = H - y - btnrow - m * 2;
     if (fileh < dpi_scale(40)) fileh = dpi_scale(40);
-    /* PANE_FILE：文件内容左右双窗格（与 PANE_CMDS 同布局），左=第一命中，右=第二命中 */
-    int fhalf = (W - 2 * m - dpi_scale(6)) / 2;
     MoveWindow(g_hfile[0], m, y, fhalf, fileh, TRUE);
     MoveWindow(g_hfile[1], m + fhalf + dpi_scale(6), y,
                W - 2 * m - fhalf - dpi_scale(6), fileh, TRUE);
@@ -1099,9 +1111,9 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         g_hchk_top = MKCTL(L"BUTTON", 0, BS_AUTOCHECKBOX, IDC_CHK_TOPMOST, L"窗口置顶");
         g_hchk_hotkey = MKCTL(L"BUTTON", 0, BS_AUTOCHECKBOX, IDC_CHK_HOTKEY, L"快捷键使能");
         g_hlabel = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_LABEL, L"标签：");
-        g_hautomode = MKCTL(L"RICHEDIT50W", 0, ES_READONLY | ES_CENTER, IDC_STC_AUTOMODE, L"MANUAL");
+        g_hautomode = MKCTL(L"RICHEDIT50W", 0, ES_READONLY | ES_MULTILINE | ES_CENTER, IDC_STC_AUTOMODE, L"MANUAL");
         g_hsrcpath = MKCTL(L"STATIC", 0, SS_LEFT | SS_ENDELLIPSIS, IDC_STC_SRCPATH, L"SRCPATH：");
-        g_hcount = MKCTL(L"STATIC", 0, SS_RIGHT, IDC_STC_INSERTCOUNT, L"计数:0000");
+        g_hcount = MKCTL(L"STATIC", 0, SS_CENTER, IDC_STC_INSERTCOUNT, L"计数:0000");
         g_hdev = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_DEVICE, L"设备状态：检测中…");
         g_herr = MKCTL(L"RICHEDIT50W", 0, ES_READONLY, IDC_STC_ERROR, L"");
         g_hprog = MKCTL(PROGRESS_CLASSW, 0, PBS_SMOOTH, IDC_PBAR_TASK, L"");
@@ -1111,6 +1123,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         /* 底部监控窗格 */
         g_hmonstatus = MKCTL(L"RICHEDIT50W", 0, ES_READONLY | ES_CENTER, IDC_STC_MONSTATUS, L"监控已停止");
         g_hmonfile = MKCTL(L"STATIC", 0, SS_CENTER, IDC_STC_MONFILE, L"");
+        g_hmonfile2 = MKCTL(L"STATIC", 0, SS_CENTER, IDC_STC_MONFILE2, L"");
         g_hmonbtn[0] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_MONSTART, L"开始监控");
         g_hmonbtn[1] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_MONSTOP, L"停止监控");
         g_hmonbtn[2] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_EXIT, L"退出");
@@ -1316,6 +1329,8 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                 SetWindowTextW(g_hprogpct, L"0%");
                 SetWindowTextW(g_hfile[0], L"");
                 SetWindowTextW(g_hfile[1], L"");
+                set_text_color(g_hmonfile, L"", RGB(0, 90, 200));
+                set_text_color(g_hmonfile2, L"", RGB(0, 90, 200));
                 /* 插拔计数器：仅监控开启时计数；4 位循环（9999→0000），退出程序不保存 */
                 if (g_monitoring) {
                     InterlockedIncrement(&g_inscount);
@@ -1369,10 +1384,15 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         /* 已废弃（待机/模式标记取消），保留消息号兼容 */
         return 0;
     case WM_APP_MONINFO: {
+        /* wparam：0=左窗格（1102+1103）；1=右窗格专属提示（仅 1108） */
         wchar_t* s = (wchar_t*)lp;
         if (s) {
             wchar_t* nl = wcschr(s, L'\n');
-            if (nl) { *nl = 0; set_monstatus(s, nl + 1, RGB(60, 60, 60)); }
+            if (wp == 1) {
+                const wchar_t* sub = nl ? nl + 1 : s;
+                set_text_color(g_hmonfile2, sub, RGB(0, 90, 200));
+            }
+            else if (nl) { *nl = 0; set_monstatus(s, nl + 1, RGB(60, 60, 60)); }
             else set_monstatus(s, L"", RGB(60, 60, 60));
             free(s);
         }

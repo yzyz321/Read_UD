@@ -15,6 +15,8 @@ typedef struct {
     wchar_t  fs[32];            /* 文件系统 FAT32/EXFAT/... */
     DWORD    serial;            /* 卷序列号 */
     BOOL     has_serial;
+    wchar_t  vidpid[64];        /* USB 硬件标识，如 "VID:0951 PID:1666"（区分同型号个体） */
+    wchar_t  usbserial[64];     /* USB 序列号（同型号个体唯一） */
     unsigned __int64 total_bytes;
     unsigned __int64 free_bytes;
 } DEVINFO;
