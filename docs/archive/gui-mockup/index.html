@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>UdiskTools GUI 模拟 · U盘拷盘工具 v1.0.0</title>
+<style>
+:root{
+  --bg:#f3f2ee; --win:#f6f5f2; --pane:#ffffff; --line:#d9d7cf; --line2:#b9b7ae;
+  --txt:#2c2c2a; --sub:#6b6a65; --accent:#185fa5; --accent-bg:#e6f1fb;
+  --green:#1d9e75; --green-bg:#e1f5ee; --amber:#ba7517; --amber-bg:#faeeda;
+  --red:#a32d2d; --red-bg:#fcebeb; --dark:#2c2c2a; --ok:#97c459;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);
+  display:flex;flex-direction:column;align-items:center;padding:24px 12px 60px;gap:14px}
+.hint{font-size:13px;color:var(--sub)}
+.hint b{color:var(--txt)}
+.window{width:920px;max-width:100%;background:var(--win);border:1px solid var(--line2);
+  border-radius:10px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.10)}
+.titlebar{display:flex;align-items:center;gap:10px;background:#eceae4;border-bottom:1px solid var(--line);
+  padding:8px 12px;user-select:none}
+.titlebar .logo{width:16px;height:16px;border-radius:4px;background:var(--accent)}
+.titlebar .t{font-size:13px;font-weight:600}
+.titlebar .t.err{color:var(--red)}
+.titlebar .btns{margin-left:auto;display:flex;gap:6px}
+.titlebar .btns span{width:26px;height:20px;border:1px solid var(--line2);border-radius:4px;
+  font-size:11px;display:flex;align-items:center;justify-content:center;color:var(--sub);background:#fff}
+.pane{margin:10px 12px 0;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--pane)}
+.pane-title{font-size:11px;color:var(--accent);letter-spacing:.4px;margin-bottom:8px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+select,button,input{font:inherit;font-size:13px}
+select{padding:5px 8px;border:1px solid var(--line2);border-radius:5px;background:#fff;min-width:150px}
+button{padding:6px 14px;border:1px solid var(--line2);border-radius:5px;background:#fff;cursor:pointer;color:var(--txt)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.green{background:#eaf3de;border-color:#3b6d11;color:#27500a}
+button:disabled{background:#e3e1da;border-color:var(--line);color:#9b9a94;cursor:not-allowed}
+.badge{padding:3px 12px;border-radius:12px;font-size:12px;border:1px solid}
+.badge.auto{background:#eaf3de;border-color:#3b6d11;color:#27500a}
+.badge.manual{background:var(--accent-bg);border-color:var(--accent);color:#0c447c}
+.badge.off{background:#f1efe8;border-color:var(--line);color:#9b9a94}
+.mono{font-family:Consolas,"Courier New",monospace}
+.statusline{font-family:Consolas,monospace;font-size:12.5px;padding:2px 0}
+.err-badge{background:var(--red-bg);border:1px solid var(--red);color:#791f1f;border-radius:6px;
+  padding:3px 12px;font-family:Consolas,monospace;font-size:12px;display:none;cursor:pointer}
+.err-badge.show{display:inline-block}
+.progress{height:16px;border-radius:9px;background:var(--green-bg);border:1px solid var(--green);overflow:hidden;flex:1}
+.progress>div{height:100%;width:0%;background:var(--green);transition:width .25s}
+.consoles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.console{background:var(--dark);border:1px solid #444441;border-radius:8px;padding:10px 12px;
+  height:190px;overflow-y:auto;font-family:Consolas,monospace;font-size:12px;line-height:1.7}
+.console .hd{color:#9fe1cb;margin-bottom:4px;font-size:11px;letter-spacing:.5px}
+.console .ln{color:#d3d1c7;white-space:pre-wrap}
+.console .ok{color:var(--ok)} .console .warn{color:#fac775} .console .errl{color:#f09595} .console .info{color:#d3d1c7}
+.verdict{display:inline-block;padding:2px 14px;border-radius:10px;font-size:12px;border:1px solid}
+.verdict.pass{background:#eaf3de;border-color:#3b6d11;color:#27500a}
+.verdict.fail{background:var(--red-bg);border-color:var(--red);color:#791f1f}
+.verdict.idle{background:#f1efe8;border-color:var(--line);color:#9b9a94}
+.filebox{font-family:Consolas,monospace;font-size:12.5px;background:#fafaf8;border:1px solid var(--line);
+  border-radius:6px;padding:8px 10px;min-height:72px;color:var(--txt);white-space:pre-wrap}
+.demo{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+.demo button{font-size:12px;padding:5px 10px}
+dialog{border:none;border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,.25);padding:0;width:640px;max-width:95vw}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.cfg-hd{display:flex;align-items:center;gap:10px;background:#eceae4;padding:10px 14px;border-bottom:1px solid var(--line)}
+.cfg-hd .t{font-size:13px;font-weight:600}
+.cfg-hd .ro{background:var(--red-bg);border:1px solid var(--red);color:#791f1f;border-radius:6px;
+  padding:2px 10px;font-size:12px;font-family:Consolas,monospace}
+.cfg-hd .ro.edit{background:#eaf3de;border-color:#3b6d11;color:#27500a}
+.cfg-body{padding:14px;background:#fff}
+.cfg-grid{display:flex;gap:12px}
+.cfg-list{width:170px;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.cfg-list div{padding:8px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid #efede7}
+.cfg-list div.on{background:var(--accent-bg);color:#0c447c;font-weight:600}
+.cfg-form{flex:1;border:1px solid var(--line);border-radius:6px;padding:12px}
+.cfg-form label{display:block;font-size:12px;color:var(--sub);margin:8px 0 3px}
+.cfg-form input,.cfg-form select{width:100%;padding:6px 8px;border:1px solid var(--line2);border-radius:5px}
+.cfg-form .ro input,.cfg-form .ro select{background:#efede7;color:#8a8983}
+.cfg-ft{display:flex;gap:8px;justify-content:flex-end;padding:10px 14px;background:#f6f5f2;border-top:1px solid var(--line)}
+.pwrow{display:flex;gap:8px;align-items:center;margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)}
+.pwrow input{width:180px;padding:6px 8px;border:1px solid var(--line2);border-radius:5px}
+.cfg-note{font-size:12px;color:var(--sub);margin-top:10px;font-family:Consolas,monospace}
+.topmost{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--sub);cursor:pointer;user-select:none}
+.topmost input{accent-color:var(--accent)}
+.window.top{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:999;
+  box-shadow:0 12px 44px rgba(0,0,0,.35);border-color:var(--accent)}
+</style>
+</head>
+<body>
+
+<div class="hint">UdiskTools GUI 模拟界面（交互演示）—— <b>试试：</b>点「模拟插盘」→「开始」跑任务 / 「模拟出错」看出错标记联动 / 「配置」体验密码解锁（密码：<b>admin123</b>）</div>
+
+<div class="window">
+  <div class="titlebar">
+    <div class="logo"></div>
+    <div class="t" id="tbTitle">U盘拷盘工具 v1.0.0</div>
+    <div class="btns"><span>—</span><span>□</span><span>✕</span></div>
+  </div>
+
+  <div class="pane">
+    <div class="pane-title">PANE_TOP · 机型与操作</div>
+    <div class="row">
+      <span class="hint">机型:</span>
+      <select id="model">
+        <option>拷盘-标准型 (Modeltype1)</option>
+        <option>拷盘-增强型 (Modeltype2)</option>
+        <option>检测-出厂 (Modeltype3)</option>
+      </select>
+      <button class="primary" id="btnStart">开始</button>
+      <button id="btnStop" disabled>停止</button>
+      <button id="btnFormat">格式化</button>
+      <button class="green" id="btnReadLabel">读取标签</button>
+      <button class="green" id="btnWriteLabel">写入标签</button>
+      <button id="btnConfig">配置</button>
+      <label class="topmost" title="窗口置顶：SetWindowPos(HWND_TOPMOST)"><input type="checkbox" id="chkTop"> 窗口置顶 IDC_CHK_TOPMOST</label>
+      <span class="badge off" id="modeBadge">○ 待机</span>
+    </div>
+  </div>
+
+  <div class="pane">
+    <div class="pane-title">PANE_LABEL · 标签信息</div>
+    <div class="statusline" id="labelInfo">卷标=（未读取）  FS=—  SN=—</div>
+  </div>
+
+  <div class="pane">
+    <div class="pane-title">PANE_STATUS · 设备状态</div>
+    <div class="row">
+      <div class="statusline" style="flex:1" id="devInfo">未插入可移动磁盘，等待中…</div>
+      <div class="err-badge" id="errBadge" onclick="clearError()">✕ 出错：READRULE 判定失败（点击清除）</div>
+    </div>
+  </div>
+
+  <div class="pane">
+    <div class="pane-title">PANE_TASK · 任务进度</div>
+    <div class="row">
+      <div class="progress"><div id="pbar"></div></div>
+      <span class="hint mono" id="pct">0%</span>
+    </div>
+  </div>
+
+  <div class="pane">
+    <div class="pane-title">PANE_CMDS · 双输出通道</div>
+    <div class="consoles">
+      <div class="console" id="cmdA"><div class="hd">CMD-A · IDC_EDIT_ENGINE（操作引擎输出）</div></div>
+      <div class="console" id="cmdB"><div class="hd">CMD-B · IDC_EDIT_IDENT（标识生成输出）</div></div>
+    </div>
+  </div>
+
+  <div class="pane">
+    <div class="pane-title">PANE_FILE · 读取内容（先判定后显示）　判定：<span class="verdict idle" id="verdict">未读取</span></div>
+    <div class="filebox" id="fileBox">（读取判定通过后显示内容）</div>
+  </div>
+  <div style="height:12px"></div>
+</div>
+
+<div class="demo" style="margin-top:14px">
+  <button onclick="simInsert()">① 模拟插盘</button>
+  <button onclick="simEject()">模拟拔盘</button>
+  <button onclick="simError()">② 模拟出错</button>
+  <button onclick="simGen()">③ 模拟标识生成（CMD-B）</button>
+  <button onclick="simUsbInfo()">模拟 USB 模式识别</button>
+</div>
+
+<dialog id="cfgDlg">
+  <div class="cfg-hd">
+    <div class="t">配置窗口 WND_CONFIG</div>
+    <div class="ro" id="cfgState">🔒 只读（未授权）</div>
+  </div>
+  <div class="cfg-body">
+    <div class="cfg-grid">
+      <div class="cfg-list" id="cfgList">
+        <div class="on" onclick="cfgPick(0,this)">拷盘-标准型</div>
+        <div onclick="cfgPick(1,this)">拷盘-增强型</div>
+        <div onclick="cfgPick(2,this)">检测-出厂</div>
+      </div>
+      <div class="cfg-form ro" id="cfgForm">
+        <label>显示名 DISPLAYNAME（内部键 ModeltypeN 对操作员隐藏）</label>
+        <input id="cfgDisp" value="拷盘-标准型">
+        <label>ENABLE_READ / ENABLE_WRITE / ENABLE_FORMAT / ENABLE_USBINFO</label>
+        <select id="cfgEn" class="mono"><option>1 | 1 | 1 | 1</option><option>1 | 1 | 0 | 1</option></select>
+        <label>WRITEMODE</label>
+        <select id="cfgWM" class="mono"><option>COPY</option><option>PROCESSED</option></select>
+        <label>SRCPATH</label>
+        <input class="mono" value="E:\temp\temp\*.img">
+        <label>READFILE（支持通配符）</label>
+        <input class="mono" value="GTB907785*.txt">
+        <label>READRULE</label>
+        <input class="mono" value="MUST_CONTAIN:DeviceID;MIN_LEN:10">
+      </div>
+    </div>
+    <div class="pwrow">
+      <span class="hint">管理员密码:</span>
+      <input type="password" id="cfgPass" placeholder="输入后解锁" disabled>
+      <button id="btnUnlock">解锁编辑</button>
+      <button id="btnSave" disabled>保存</button>
+    </div>
+    <div class="cfg-note" id="cfgNote">解锁流程：比对 ADMINPASS → 通过则进入编辑模式；连错 3 次锁定 5 分钟并记日志。演示密码：admin123</div>
+  </div>
+  <div class="cfg-ft">
+    <button onclick="cfgDlg.close()">关闭</button>
+  </div>
+</dialog>
+
+<script>
+const $=id=>document.getElementById(id);
+let inserted=false, unlocked=false, errMode=false;
+
+function log(c,cls,msg){
+  const box=$(c), d=document.createElement('div');
+  d.className='ln '+cls;
+  const t=new Date().toTimeString().slice(0,8);
+  d.textContent=t+'  '+msg;
+  box.appendChild(d); box.scrollTop=box.scrollHeight;
+}
+function A(cls,m){log('cmdA',cls,m)} function B(cls,m){log('cmdB',cls,m)}
+
+function setMode(mode){
+  const b=$('modeBadge');
+  if(mode==='auto'){b.className='badge auto';b.textContent='● 自动模式'}
+  else if(mode==='manual'){b.className='badge manual';b.textContent='● 手动模式'}
+  else{b.className='badge off';b.textContent='○ 待机'}
+}
+function setErr(on){
+  errMode=on;
+  $('errBadge').classList.toggle('show',on);
+  $('tbTitle').textContent='U盘拷盘工具 v1.0.0'+(on?' [!]':'');
+}
+function clearError(){ setErr(false); A('info','[INFO] 出错标记已由操作员确认清除') }
+
+$('btnConfig').onclick=()=>cfgDlg.showModal();
+
+;const BTN_DEF={start:'开始',stop:'停止',format:'格式化',readLabel:'读取标签',writeLabel:'写入标签'};
+const BTN_CFG={   /* 每机型按钮显示名覆盖（对应 ini 的 BTN_* 键）*/
+  0:{writeLabel:'升级'},          /* 通用机型：写入标签 → 升级 */
+  1:{},                            /* WT3：全部默认名 */
+  2:{}                             /* N2010：全部默认名 */
+};
+function applyBtnNames(){
+  const ov=BTN_CFG[$('model').selectedIndex]||{};
+  for(const k in BTN_DEF){ $(k==='start'?'btnStart':k==='stop'?'btnStop':k==='format'?'btnFormat':k==='readLabel'?'btnReadLabel':'btnWriteLabel').textContent=ov[k]||BTN_DEF[k]; }
+}
+$('model').addEventListener('change',()=>{ applyBtnNames();
+  A('info','[UI] 机型切换为 '+$('model').value+'（按钮显示名按机型配置刷新，内部 IDC 不变）');
+});
+applyBtnNames();
+
+$('chkTop').onchange=e=>{
+  document.querySelector('.window').classList.toggle('top',e.target.checked);
+  A('info','[UI] 窗口置顶 '+(e.target.checked?'开启（HWND_TOPMOST，不被其它窗口遮挡）':'关闭（HWND_NOTOPMOST）'));
+};
+function roMode(){
+  document.querySelectorAll('#cfgForm input,#cfgForm select').forEach(e=>{e.disabled=!unlocked;e.parentElement.classList.toggle('ro',!unlocked)});
+  $('cfgPass').disabled=unlocked;
+  $('btnUnlock').disabled=unlocked;
+  $('btnSave').disabled=!unlocked;
+  const s=$('cfgState');
+  s.textContent=unlocked?'🔓 已解锁（编辑模式）':'🔒 只读（未授权）';
+  s.classList.toggle('edit',unlocked);
+}
+let pwTries=0;
+$('btnUnlock').onclick=()=>{
+  if($('cfgPass').value==='admin123'){ unlocked=true; roMode(); A('info','[CFG] 配置已解锁，进入编辑模式（日志记录，不含密码）'); }
+  else{ pwTries++; A('warn','[CFG] 配置解锁密码错误 ('+pwTries+'/3)');
+    if(pwTries>=3){ $('btnUnlock').disabled=true; $('cfgNote').textContent='❌ 连续错误 3 次，配置窗口锁定 5 分钟（已记日志）'; } }
+};
+$('btnSave').onclick=()=>{ A('info','[CFG] 配置已保存写回 ini（保留注释与未涉及键）'); unlocked=false; roMode(); };
+function cfgPick(i,el){ document.querySelectorAll('#cfgList div').forEach(d=>d.classList.remove('on')); el.classList.add('on');
+  $('cfgDisp').value=el.textContent; }
+
+$('btnReadLabel').onclick=()=>{
+  if(!inserted){A('warn','[WARN] 未检测到可移动磁盘');return}
+  setMode('manual');
+  $('labelInfo').textContent='卷标=UDISK  FS=exFAT  SN=0x2B4C9A10';
+  A('info','[LABEL] 卷标=UDISK  FS=exFAT  SN=0x2B4C9A10');
+  A('ok','[OK] 读取标签完成');
+};
+$('btnWriteLabel').onclick=()=>{
+  if(!inserted){A('warn','[WARN] 未检测到可移动磁盘');return}
+  setMode('manual');
+  A('info','[LABEL] 写入卷标 PAW5000 (来自机型配置 VOLUME)');
+  setTimeout(()=>{ $('labelInfo').textContent='卷标=PAW5000  FS=exFAT  SN=0x2B4C9A10';
+    A('ok','[OK] 写入标签并回读一致'); },600);
+};
+$('btnFormat').onclick=()=>{
+  if(!inserted){A('warn','[WARN] 未检测到可移动磁盘');return}
+  setMode('manual'); A('info','[FORMAT] CONFIRM=1 → 弹窗二次确认（演示跳过）');
+  A('info','[FORMAT] FAT32 格式化中…'); setTimeout(()=>A('ok','[OK] 格式化完成，卷标已设置'),900);
+};
+
+$('btnStart').onclick=()=>{
+  if(!inserted){A('warn','[WARN] 未检测到可移动磁盘，无法开始');return}
+  setMode('manual'); $('btnStart').disabled=true; $('btnStop').disabled=false;
+  setErr(false);
+  const v=$('verdict'); v.className='verdict idle'; v.textContent='判定中…';
+  $('fileBox').textContent='（判定进行中）';
+  let p=0; const steps=[
+    ['[INFO] 当前机型: Modeltype1 (拷盘-标准型) v1.0.0','info'],
+    ['[WRITE COPY] SRCPATH *.img → D:\\test\\  (3 files, 128 MB)','info'],
+    ['[OK] 写入完成 14.2 MB/s，MD5 校验通过','ok'],
+    ['[READ] 扫描 D:\\ 命中 GTB9077851234.txt (MATCH_POLICY=NEWEST)','info'],
+    ['[READRULE] MUST_CONTAIN:DeviceID … 判定 PASS','ok'],
+    ['[LOG] 已写入 logs\\20261021.log','info']];
+  let i=0;
+  const t=setInterval(()=>{
+    if(i<steps.length){ A(steps[i][1],steps[i][0]); p=Math.round((i+1)/steps.length*100); $('pbar').style.width=p+'%'; $('pct').textContent=p+'%'; i++; }
+    else{ clearInterval(t); v.className='verdict pass'; v.textContent='PASS';
+      $('fileBox').textContent='DeviceID: PAW5000-MKII-0042\nFW: 1.4.0.1   SN: A20261020042\nCal: OK    Temp: 25C';
+      $('btnStart').disabled=false; $('btnStop').disabled=true; setTimeout(()=>setMode('idle'),1500); }
+  },650);
+};
+$('btnStop').onclick=()=>{ A('warn','[STOP] 任务已由操作员停止'); $('btnStart').disabled=false; $('btnStop').disabled=true; };
+
+function simInsert(){
+  inserted=true; setMode('auto'); setErr(false);
+  $('devInfo').textContent='D:\\  |  UDISK  |  64GB  |  exFAT  |  ● 已插入  |  机型: Modeltype1';
+  A('info','[AUTO] 检测到可移动磁盘 D:\\（1s 轮询命中，机型取当前选中 Modeltype1）');
+  A('info','[AUTO] AUTORW=1 → 3 秒后自动执行任务…（演示：点「开始」手动触发）');
+}
+function simEject(){
+  inserted=false; $('devInfo').textContent='未插入可移动磁盘，等待中…';
+  A('warn','[WARN] 设备已移除，任务标记 ABORTED，回到轮询监听');
+}
+function simError(){
+  if(!inserted){A('warn','[WARN] 请先模拟插盘');return}
+  const v=$('verdict'); v.className='verdict fail'; v.textContent='FAIL';
+  $('fileBox').textContent='判定失败：MUST_CONTAIN:DeviceID 未命中\n（READRULE 判定不通过，原始内容不显示）';
+  A('errl','[ERR] READRULE 判定失败: MUST_CONTAIN:DeviceID 未命中');
+  setErr(true);
+}
+function simGen(){
+  if(!inserted){A('warn','[WARN] 请先模拟插盘');return}
+  B('info','[GEN] SN=A202610200'+Math.floor(42+Math.random()*9));
+  setTimeout(()=>B('ok','[OK] MAC=00:1A:2B:3C:4D:5E'),500);
+  setTimeout(()=>B('info','[PROC] fw.cfg: ${SN}/${MAC} 占位符替换完成 → GTB9077851234.cfg'),900);
+}
+function simUsbInfo(){
+  if(!inserted){A('warn','[WARN] 请先模拟插盘');return}
+  A('info','[USBINFO] 总线速率: SuperSpeed (USB 3.x)  接口: Type-C  方向: 正插');
+}
+setMode('idle');
+</script>
+</body>
+</html>
