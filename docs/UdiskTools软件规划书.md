@@ -1,18 +1,71 @@
-# UdiskTools 规划书与开发流程（合并版）
+# UdiskTools 软件规划书（最终合并版）
 
-> 版本：v1.1 ｜ 日期：2026-10-23 ｜ 状态：按 **v1.0.0-alpha.19** 实际实现修订
-> 本文件由原《UdiskTools软件规划书.md》与《开发流程.md》合并而成，以代码实际行为准；
-> 与本文冲突的旧描述一律作废。
+> 版本：v2.0 ｜ 日期：2026-10-23 ｜ 状态：按 **v1.0.0-alpha.19** 实际实现修订
+> 本文件是以下四份策划文档的**唯一有效合并版**，与之冲突的旧描述一律作废：
+> ①《策划方案-UdiskOps可移动磁盘操作软件》v1.0 → ②《策划方案-UdiskTools合并重构(C语言版)》v2.0
+> → ③《UdiskTools软件规划书》v1.0 → ④《UdiskTools规划与开发流程》v1.1（原件存 `docs/archive/`）
 > 定位：Windows 可移动磁盘（U 盘）自动化操作工具 · C 语言全新开发
 
 ---
 
-## 1. 项目概述
+## 0. 文档沿革
 
-### 1.1 定位
+| 版本 | 日期 | 文档 | 结局 |
+|---|---|---|---|
+| v1.0 构想 | 2026-10-20 | 策划方案-UdiskOps（Python + PySide6 + JSON/YAML） | 被 v2.0 合并重构方案取代，未开发 |
+| v2.0 定向 | 2026-10-20 | 策划方案-UdiskTools合并重构(C语言版) | 确立 C/Win32 + ini 重构路线，含旧软件功能分析 |
+| v1.0 定稿 | 2026-10-21 | UdiskTools软件规划书 | 详细规格定稿（待开发状态），内容并入本文 |
+| v1.1 修订 | 2026-10-23 | UdiskTools规划与开发流程 | 首次按 alpha.19 实际实现修订，并入本文 |
+| **v2.0 合并** | **2026-10-23** | **本文件** | **唯一有效规划文档** |
+
+### 采纳与取舍（来自 UdiskOps v1.0 构想）
+| UdiskOps 方案 | 处置 | 现行落点 |
+|---|---|---|
+| 配置驱动、自动/手动双模式、强制留痕 | ✅ 采纳 | ini 配置 + 监控/AUTORUN + 日志双通道 |
+| 读写校验（MD5） | ✅ 采纳 | 复制逐文件 MD5 + 读写测试比对 |
+| Python/PySide6、JSON/YAML、Schema 校验 | ❌ 否决 | C11 + 纯 Win32 + ini（单 exe 免运行库） |
+| 精准测速（speed_test、测速曲线） | ❌ 否决 | 改为 USB 通讯模式识别（usbinfo） |
+| HTML/JSON 报告、SQLite 存档、托盘常驻、Web 界面 | ❌ 否决 | 双 CMD 输出区 + 按日期滚动日志 |
+| 设备白名单/黑名单 | ⏸ 未实装 | 列为预留（按 VID/PID/SN 过滤） |
+| 多盘并行、失败策略 stop/continue/retry | ⬜ 待办 | Phase 3 |
+
+---
+
+## 1. 项目沿革与旧软件分析
+
+### 1.1 旧软件（仅作功能模式参考，完全重构、无迁移负担）
+
+**DiskRW_V2.0（IET_disktools，exe + ini）**——产线 U 盘拷盘/格式化工具：
+
+| 功能 | ini 键 | 新软件落点 |
+|---|---|---|
+| 多项目配置 | `PRJNUM` / `PRJNAME1..n` | ini 节结构（内部键 + DISPLAYNAME 双层映射） |
+| 文件复制 | `SRCPATH` → `DSTPATH` | op_write（WRITEMODE=COPY，按字节进度 + MD5） |
+| 插盘自动读写/复制 | `AUTORW` / `AUTOCOPY` | 监控开关 + `AUTORUN`（三层职责分离，见 3.2） |
+| 格式化 | `CONFIRM` / `FILESYSTEM` / `VOLUME` | op_format（fmifs.dll FormatEx） |
+| 热键 T / C | 键盘热键 | RegisterHotKey（ID_HOTKEY_T/C，均触发整任务） |
+
+**read-U（Python + tkinter）**——U 盘文件监控读取器：
+
+| 功能 | 新软件落点 |
+|---|---|
+| 1s 轮询 + `GetDriveType == DRIVE_REMOVABLE` | 设备层轮询（沿用，WM_DEVICECHANGE 升级列为待办） |
+| 按文件名读取并显示（多编码） | op_read + READRULE 判定（先判定再显示，双窗格） |
+| 拔盘/文件移除清空显示 | 插盘先清空上一轮状态再刷新 |
+
+**合并思路（已实现）**：统一为一个配置驱动的引擎，"复制/格式化/读写测试"与"读文件显示判定"都成为配置里的步骤，一个 GUI 全部承载。
+
+### 1.2 迭代历程（v1.0.0-alpha.1 → alpha.19）
+alpha.11 配置键值提示 → alpha.12–14 判定/刷新/徽标修正 → alpha.15 计数器与按钮统一 → alpha.16 READ 子目录修复 + 按字节进度 + 双文件窗格 → alpha.17 VID/PID/SN 设备链 → alpha.18 配置值输入完善 + 键值编辑方式对照表 → alpha.19 修复键名下拉选择时值编辑器不切换（CBN_SELCHANGE 文本滞后）。
+
+---
+
+## 2. 项目概述
+
+### 2.1 定位
 **UdiskTools** 是一款 Windows 单文件 GUI 工具（纯 Win32 API，无第三方运行时依赖）：一个 exe + 一个 ini。通过配置文件定义每种机型的操作流程，支持**自动**（插盘触发）与**手动**（按钮/热键）两种执行方式，覆盖复制写入、读取判定、格式化、USB 通讯模式识别、标签读取、读写测试等能力，全程强制留痕（双 CMD 输出区 + 日志文件）。
 
-### 1.2 核心设计原则
+### 2.2 核心设计原则
 | 原则 | 说明 |
 |---|---|
 | 配置驱动 | 操作内容、功能开关、判定规则全部来自 ini，改配置不改代码 |
@@ -21,34 +74,34 @@
 | 强制留痕 | 所有操作写日志，不可关闭；界面 CMD 区与文件日志双通道 |
 | 高 DPI 优先 | Per-Monitor V2 感知 + `WM_DPICHANGED` 动态重排 |
 
-### 1.3 运行环境
+### 2.3 运行环境
 - Windows 10 / 11 x64
 - 编译工具链：**MinGW-w64（gcc / llvm-mingw 均可）**，Makefile 构建（CMakeLists.txt 备用）
 - 交付物：单 exe（免安装、免运行库）+ 示例 ini + 使用说明
 
 ---
 
-## 2. 实施状态总览（截至 v1.0.0-alpha.19）
+## 3. 实施状态总览（截至 v1.0.0-alpha.19）
 
 主体功能已全部实装并通过真盘验证（READ 子目录命中、复制进度、配置编辑等），
 版本按 `v1.0.0-alpha.N` 迭代发布（当前 19 个 tag）。
 
 | 状态 | 内容 |
 |---|---|
-| ✅ 已实装 | 插拔轮询与设备信息（含 VID/PID/SN）、整任务编排（识别→复制→读取判定→测试）、复制（按字节进度+MD5 校验）、读取判定（子目录/通配/策略/规则链/双窗格）、格式化（fmifs + 确认 + 卷标）、USB 速度识别、读取标签、读写测试、配置窗口（下拉/输入/解锁/恢复默认）、双 CMD、监控窗格与插拔计数、热键、置顶、DPI 动态重排 |
-| ⏸ 预留（v1.x 后续） | WRITEMODE=PROCESSED、READPATTERN=REGEX、Type-C 正反插识别、gen_ident 按台标识生成（现为 CMD-B 演示输出）、ADMINPASS_HASH、独立 verify 操作（MD5 已内置于复制）、独立 write_label 操作（卷标写入已并入格式化） |
-| ⬜ 待办 | 多 DPI 档位验收、CSV 导出、多盘排队执行、失败策略（stop/continue/retry）、WM_DEVICECHANGE 事件驱动、GitHub 远端托管 |
+| ✅ 已实装 | 插拔轮询与设备信息（含 VID/PID/SN）、整任务编排（识别→复制→读取判定→测试）、复制（按字节进度+MD5 校验）、读取判定（子目录/通配/策略/规则链/双窗格）、格式化（fmifs + 确认 + 卷标）、USB 速度识别、读取标签、读写测试、配置窗口（下拉/输入/解锁/恢复默认）、双 CMD、监控窗格与插拔计数、热键、置顶、DPI 动态重排、CI 工作流（.github/workflows/build.yml） |
+| ⏸ 预留（v1.x 后续） | WRITEMODE=PROCESSED、READPATTERN=REGEX、Type-C 正反插识别、gen_ident 按台标识生成（现为 CMD-B 演示输出）、ADMINPASS_HASH、设备白名单、独立 verify 操作（MD5 已内置于复制）、独立 write_label 操作（卷标写入已并入格式化） |
+| ⬜ 待办 | 多 DPI 档位验收、CSV 导出、多盘排队执行、失败策略（stop/continue/retry）、WM_DEVICECHANGE 事件驱动、GitHub 远端托管（工作流已就绪待生效） |
 
 ---
 
-## 3. 功能规格
+## 4. 功能规格
 
-### 3.1 设备层
-- **F1.1 插拔检测**：1 秒轮询（`GetLogicalDrives` + `GetDriveType == DRIVE_REMOVABLE`），只负责发现设备，**不做机型推断**；`WM_DEVICECHANGE` 事件驱动列为后续升级项
-- **F1.2 设备信息**：盘符、卷标、文件系统、容量、卷序列号；另经 SetupAPI + CfgMgr 父设备链（Disk→USBSTOR→USB）解析 **VID/PID 与 USBSTOR 序列号**，用于区分同型号的不同个体（内置盘正确回退为空）
-- **F1.3 机型匹配**：机型为独立状态——启动取 ini 的 `DEFAULTMODEL`，运行中操作员可随时下拉切换（切换即重载配置）；插盘一律使用"当前选中机型"配置节执行
+### 4.1 设备层
+- **插拔检测**：1 秒轮询（`GetLogicalDrives` + `GetDriveType == DRIVE_REMOVABLE`），只负责发现设备，**不做机型推断**；`WM_DEVICECHANGE` 事件驱动列为后续升级项
+- **设备信息**：盘符、卷标、文件系统、容量、卷序列号；另经 SetupAPI + CfgMgr 父设备链（Disk→USBSTOR→USB）解析 **VID/PID 与 USBSTOR 序列号**，用于区分同型号的不同个体（内置盘正确回退为空）
+- **机型匹配**：机型为独立状态——启动取 ini 的 `DEFAULTMODEL`，运行中操作员可随时下拉切换（切换即重载配置）；插盘一律使用"当前选中机型"配置节执行
 
-### 3.2 整任务编排（task_thread，自动/手动共用）
+### 4.2 整任务编排（task_thread，自动/手动共用）
 
 触发后取**第一个可移动盘符**（无盘报错），`g_running` 互斥（执行中新请求忽略），串行执行：
 
@@ -59,9 +112,9 @@
 
 每步间检查停止标志（[停止] 按钮/停止监控），结束时按 rc 汇总：成功=绿"任务完成"、已停止=绿"任务已停止"、有错误=红徽标（由各 op 内部置位）。
 
-> 三层职责分离（易混淆点）：**ENABLE_*** 只决定"步骤/按钮是否存在"；**监控开关 + AUTORUN** 只决定"插盘要不要自动跑"（1104 的 AUTO/MANUAL 唯一判定）；**AUTO_COPY / AUTO_TEST** 只决定"自动流程内做不做复制/测试"。详见《插拔全流程图.html》。
+> **三层职责分离（易混淆点）**：**ENABLE_*** 只决定"步骤/按钮是否存在"；**监控开关 + AUTORUN** 只决定"插盘要不要自动跑"（1104 的 AUTO/MANUAL 唯一判定）；**AUTO_COPY / AUTO_TEST** 只决定"自动流程内做不做复制/测试"。全流程条件判断详见《插拔全流程图.html》。
 
-### 3.3 操作引擎（ops.c，`op_*` 函数族）
+### 4.3 操作引擎（ops.c，`op_*` 函数族）
 
 | 操作 | 实装状态 | 说明 |
 |---|---|---|
@@ -75,7 +128,7 @@
 
 **通配符匹配**：`*` 任意长度、`?` 单字符；命中的可变片段捕获为 `${MATCH_1}` 写日志（模板替换复用为预留项）；`READPATTERN=REGEX` 为预留（暂按 WILDCARD 处理并记日志）。
 
-### 3.4 配置文件（ini，UTF-8 with BOM）
+### 4.4 配置文件（ini，UTF-8 with BOM）
 
 ```ini
 [TOOLSINFO]
@@ -114,8 +167,9 @@ HASH=md5                        ; 复制后校验算法
 
 实际参考配置为 4 种机型（见 `profiles\UdiskTools.ini`）：
 GENERIC=通用机型 / WT-2=WT-2机型 / N2010=N2010机型 / K2311-S3=K2311(S3)机型。
+键值编辑方式全键对照见《配置文件使用手册.md》8.1 节。
 
-### 3.5 界面（Win32 原生控件，全部登记 `ui/resource.h`）
+### 4.5 界面（Win32 原生控件，全部登记 `ui/resource.h`）
 
 窗口标题 `TITLE vVERSION`；不做托盘常驻，关闭即退出（任务运行中先确认）。
 
@@ -152,12 +206,12 @@ GENERIC=通用机型 / WT-2=WT-2机型 / N2010=N2010机型 / K2311-S3=K2311(S3)�
 - [保存] 3004 写回 ini（保留注释与未涉及键）并立即重载配置刷新主界面；[恢复默认设置] 3010 用内嵌出厂 ini 覆盖（二次确认）
 - 解锁/保存/恢复均写日志（不含密码）
 
-### 3.6 日志（强制，不可关闭）
+### 4.6 日志（强制，不可关闭）
 - `exe_dir\logs\YYYYMMDD.log` 按日期滚动：时间、通道、级别、内容
 - CMD-A/B 与文件日志同步输出（applog 双通道）
 - CSV 导出为待办项
 
-### 3.7 DPI 适配
+### 4.7 DPI 适配
 1. 启动时运行态声明 Per-Monitor V2（`SetProcessDpiAwarenessContext`，失败回退 Per-Monitor/system aware）
 2. 所有窗口/控件/字体尺寸经 `GetDpiForWindow()` 换算（`dpi_scale` 宏），禁止写死像素
 3. 处理 `WM_DPICHANGED`：重建字体、`SetWindowPos` 重排
@@ -165,7 +219,7 @@ GENERIC=通用机型 / WT-2=WT-2机型 / N2010=N2010机型 / K2311-S3=K2311(S3)�
 
 ---
 
-## 4. 技术方案
+## 5. 技术方案
 
 | 项 | 选择 |
 |---|---|
@@ -177,9 +231,10 @@ GENERIC=通用机型 / WT-2=WT-2机型 / N2010=N2010机型 / K2311-S3=K2311(S3)�
 | 设备链 | SetupAPI + CfgMgr32（VID/PID/序列号） |
 | 热键 | RegisterHotKey |
 | 并发 | CreateThread + Interlocked 互斥（`g_running`/`g_stop`）：工作线程执行 IO，UI 线程不卡 |
+| CI | GitHub Actions `.github/workflows/build.yml`（push/PR 触发 make 构建 + 冒烟测试，待远端托管生效） |
 | 交付 | 单 exe（数百 KB 量级），免安装免运行库 |
 
-**实际代码结构**：
+**实际代码结构**（原规划的 ui.c、ini.c、rule.c、log.c 独立文件未采用：GUI 集中于 gui.c，ini 归 config.c，规则链内置于 ops.c，日志归 util.c）：
 ```
 udisktools/
 ├── src/
@@ -193,15 +248,16 @@ udisktools/
 │   └── md5.c/h
 ├── ui/resource.h       # 全部控件与窗口 ID 登记
 ├── profiles/           # 参考配置（4 机型）
-├── docs/               # 使用手册、插拔全流程图、本文件
+├── docs/               # 本文件、使用手册、插拔全流程图、mockup、archive
 ├── scripts/            # default_ini.h 生成器、跨进程回归脚本
+├── .github/workflows/  # CI（make 构建 + 冒烟测试）
+├── tests/              # 单元测试占位（Phase 3）
 └── Makefile / CMakeLists.txt
 ```
-（原规划的 ui.c、ini.c、rule.c、log.c 独立文件未采用：GUI 集中于 gui.c，ini 归 config.c，规则链内置于 ops.c，日志归 util.c。）
 
 ---
 
-## 5. 开发计划（Phase 制，不含时间安排）
+## 6. 开发计划（Phase 制，不含时间安排）
 
 ### Phase 1 — 引擎与设备层 ✅ 已完成
 - ini 解析写回（保留注释）、机型双层映射、通配符匹配、READRULE 规则链
@@ -222,16 +278,16 @@ udisktools/
 - [ ] `gen_serial`/`gen_mac` 按台标识生成规则落地（替换演示输出）
 - [ ] WRITEMODE=PROCESSED 模板按台生成（`${SN}`/`${MAC}`/`${DATE}` 占位符）
 - [ ] READPATTERN=REGEX、ADMINPASS_HASH、CSV 导出
-- [ ] 多盘排队执行、失败策略（stop/continue/retry）、WM_DEVICECHANGE 升级
-- [ ] 打包发布：单 exe + 示例 ini + 使用说明 + GitHub 远端托管
+- [ ] 多盘排队执行、失败策略（stop/continue/retry）、WM_DEVICECHANGE 升级、设备白名单
+- [ ] 打包发布：单 exe + 示例 ini + 使用说明 + GitHub 远端托管（CI 工作流已就绪）
 
 **M3 里程碑**：v1.0 正式版发布。
 
 ---
 
-## 6. 开发流程
+## 7. 开发流程
 
-### 6.1 分支模型（当前实际执行方式）
+### 7.1 分支模型（当前实际执行方式）
 
 | 分支 | 用途 |
 |---|---|
@@ -248,9 +304,9 @@ udisktools/
 5. git switch main && git merge --no-ff dev
 6. git tag v1.0.0-alpha.N && 删除 feature 分支
 ```
-> 远端托管后升级为：push → CI 构建 → PR 合入 dev（当前 CI/PR 未启用，属 Phase 3 待办）。
+> 远端托管后升级为：push → GitHub Actions CI 构建（build.yml 已就绪）→ PR 合入 dev。
 
-### 6.2 提交规范（Conventional Commits）
+### 7.2 提交规范（Conventional Commits）
 ```
 feat: ini 解析器支持注释保留写回
 fix: CBN_SELCHANGE 编辑框文本滞后导致值编辑器不切换
@@ -259,24 +315,25 @@ refactor: 提取 pattern.c 通配符匹配
 ```
 一条提交只做一件事；提交信息说明"为什么"而不只是"改了什么"。
 
-### 6.3 版本与发布
+### 7.3 版本与发布
 - 每轮功能/修复合入 main 后打 tag `v1.0.0-alpha.N`（N 递增）；正式发布打 `v1.0.0`
 - 版本号与 `src/version.h`、ini 的 `VERSION` 键保持一致（发版前统一检查）
 
-### 6.4 质量门禁
+### 7.4 质量门禁
 - 编译零 error；`-Wall -Wextra` 下不新增 warning
 - 影响控件布局的改动必须对照 `ui/resource.h` 与 `docs/mockup/控件位置对照图.html`
 - 涉及 ini 格式的改动必须同步：本文件、`docs/配置文件使用手册.md`、`profiles/UdiskTools.ini`、`scripts/gen_default_ini.py` 生成器
 - 日志相关改动：确认"日志强制输出"红线未被破坏
 - 修复类改动须附可复现的验证手段（跨进程控件回读脚本/真盘验证记录）
 
-### 6.5 本地环境（已就绪）
+### 7.5 本地环境（已就绪）
 - MinGW-w64 工具链 ✅、git ✅、Makefile 构建入口 ✅（cmake 备用）
 - 真盘验证：可移动 U 盘（历史验证盘符 F:）
+- 旧软件参考件：`D:\workbuddy\WR_Udisk\temp\`（DiskRW_V2.0 / read-U / K2311 / K2411）
 
 ---
 
-## 7. 验收标准（摘要）
+## 8. 验收标准（摘要）
 1. 插入 U 盘（监控开启或 AUTORUN=1）数秒内按当前选中机型自动执行；MANUAL 模式按钮/热键立即响应
 2. READRULE 判定 PASS 才显示内容；FAIL 触发出错标记三处联动
 3. 复制后 MD5 比对 100% 一致；进度条按字节实时推进
@@ -288,7 +345,7 @@ refactor: 提取 pattern.c 通配符匹配
 
 ---
 
-## 8. 风险与对策
+## 9. 风险与对策
 
 | 风险 | 对策 |
 |---|---|
@@ -301,11 +358,12 @@ refactor: 提取 pattern.c 通配符匹配
 
 ---
 
-## 9. 已确认决议（含迭代中新增）
+## 10. 已确认决议（含迭代中新增）
 - ✅ 不强制管理员权限（仅格式化按需提权）
 - ✅ 日志强制输出，不可关闭；不做托盘常驻
 - ✅ 不做精准测速，改为 USB 通讯模式识别（usbinfo）
-- ✅ 全新开发；机型内部键与显示名双层映射（实际 4 机型：GENERIC / WT-2 / N2010 / K2311-S3）
+- ✅ 完全重构，旧软件仅作功能模式参考，不做迁移与向后兼容
+- ✅ 机型内部键与显示名双层映射（实际 4 机型：GENERIC / WT-2 / N2010 / K2311-S3）
 - ✅ 机型匹配与轮询解耦（DEFAULTMODEL / 下拉随时改，切换即重载配置）
 - ✅ 双 CMD 显示区 + 全控件 ID 登记 + AUTO/MANUAL 与出错状态标记
 - ✅ 每机型 ENABLE_* 功能开关；读取先判定再显示；复制按字节进度 + MD5 校验
@@ -317,9 +375,10 @@ refactor: 提取 pattern.c 通配符匹配
 - ✅ 窗口置顶、T/C 全局热键（使能复选框控制）
 - ✅ 迭代发布：v1.0.0-alpha.N tag 序列（当前 alpha.19）
 - ✅ DPI Per-Monitor V2 + WM_DPICHANGED 动态重排
+- ✅ CI 工作流 build.yml 就绪（GitHub Actions）
 
-## 10. 待确认事项
+## 11. 待确认事项
 - [ ] `gen_serial` / `gen_mac` 生成规则：流水号段、MAC 池来源、防重复持久化
 - [ ] PROCESSED 模板路径与占位符规范（`${SN}`/`${MAC}`/`${DATE}`/`${MATCH_1}`）
 - [ ] CSV 导出字段（rwtest 结论、usbinfo 通讯模式）
-- [ ] GitHub 远端仓库与 CI 接入时机
+- [ ] GitHub 远端仓库接入时机（CI 随远端生效）
