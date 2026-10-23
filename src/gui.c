@@ -742,12 +742,23 @@ static int key_enum_values(const wchar_t* key, const wchar_t** vals, int max)
 }
 
 /* 按当前键切换"新值"控件：枚举→下拉；普通（SRCPATH/DSTPATH/READFILE 等）→输入框
- * fill_value=TRUE 时把配置里的当前值回填到值控件（列表选择时）；
- * 手动键入键名时 fill_value=FALSE，避免打断正在进行的输入 */
-static void cfg_sync_value_editor_ex(BOOL fill_value)
+ * from_list=TRUE 表示键名来自下拉列表选中（此时编辑框文本可能尚未刷新，
+ * 必须用 CB_GETCURSEL/CB_GETLBTEXT 取列表项，否则拿到旧键名导致控件类型不切换）；
+ * fill_value=TRUE 时把配置里的当前值回填到值控件 */
+static void cfg_sync_value_editor_ex(BOOL from_list, BOOL fill_value)
 {
     wchar_t key[CFG_KEY_LEN];
-    GetWindowTextW(g_hcfgkey, key, CFG_KEY_LEN);   /* 兼容手输键名（CBS_DROPDOWN） */
+    if (from_list) {
+        int ki = (int)SendMessageW(g_hcfgkey, CB_GETCURSEL, 0, 0);
+        if (ki >= 0 &&
+            SendMessageW(g_hcfgkey, CB_GETLBTEXT, ki, (LPARAM)key) != CB_ERR) {
+            /* 键名取自列表项（新选中的键） */
+        } else {
+            GetWindowTextW(g_hcfgkey, key, CFG_KEY_LEN);
+        }
+    } else {
+        GetWindowTextW(g_hcfgkey, key, CFG_KEY_LEN);   /* 手输键名（CBS_DROPDOWN） */
+    }
     if (!key[0]) return;
     int mi = (int)SendMessageW(g_hcfglist, LB_GETCURSEL, 0, 0);
     if (mi < 0 || mi >= g_cfg.nmodels) return;
@@ -772,7 +783,8 @@ static void cfg_sync_value_editor_ex(BOOL fill_value)
         SendMessageW(g_hcfgvalcombo, CB_SETCURSEL, pick, 0);
     } else {
         /* 自由键（SRCPATH/DSTPATH/READFILE/READRULE/VOLUME/BTN_* 等）→ 输入框，
-         * 无论锁定与否都回填当前值（锁定时灰显可看不可改） */
+         * 无论锁定与否都回填当前值（锁定时灰显可看不可改），
+         * 并顺带清掉上个枚举键可能残留在输入框里的旧值 */
         SetWindowTextW(g_hcfgvallbl, L"新值（输入）：");
         ShowWindow(g_hcfgvalcombo, SW_HIDE);
         ShowWindow(g_hcfgval, SW_SHOW);
@@ -793,7 +805,7 @@ static void cfg_sync_value_editor_ex(BOOL fill_value)
 
 static void cfg_sync_value_editor(void)
 {
-    cfg_sync_value_editor_ex(TRUE);
+    cfg_sync_value_editor_ex(TRUE, TRUE);
 }
 
 static void cfg_show_model(void)
@@ -971,9 +983,9 @@ static LRESULT CALLBACK cfg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             break;
         case IDC_CFG_COMBO_KEY:
             if (HIWORD(wp) == CBN_SELCHANGE)
-                cfg_sync_value_editor_ex(TRUE);    /* 列表选择：回填当前值 */
+                cfg_sync_value_editor_ex(TRUE, TRUE);   /* 列表选择：以列表项键名为准，回填当前值 */
             else if (HIWORD(wp) == CBN_EDITCHANGE)
-                cfg_sync_value_editor_ex(FALSE);   /* 手输键名：只切类型/更新说明 */
+                cfg_sync_value_editor_ex(FALSE, TRUE);  /* 手输键名：以编辑框文本为准 */
             break;
         case IDC_BTN_UNLOCK: {
             /* 两步式：第一次点击显示密码框；输入密码后再次点击校验 */
