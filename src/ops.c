@@ -52,13 +52,13 @@ static void post_progress(int pct)
         PostMessageW(g_hwnd_result, WM_APP_PROGRESS, (WPARAM)pct, 0);
 }
 
-/* 监控状态上报："标题\n副行" */
-static void post_moninfo(const wchar_t* title, const wchar_t* sub)
+/* 监控状态上报："标题\n副行"；pane=1 时只写右窗格专属提示行（IDC_STC_MONFILE2 1108） */
+static void post_moninfo(const wchar_t* title, const wchar_t* sub, int pane)
 {
     if (g_hwnd_result) {
         wchar_t buf[700];
-        _snwprintf(buf, 700, L"%s\n%s", title, sub ? sub : L"");
-        PostMessageW(g_hwnd_result, WM_APP_MONINFO, 0, (LPARAM)wcs_dup(buf));
+        _snwprintf(buf, 700, L"%s\n%s", title ? title : L"", sub ? sub : L"");
+        PostMessageW(g_hwnd_result, WM_APP_MONINFO, (WPARAM)pane, (LPARAM)wcs_dup(buf));
     }
 }
 
@@ -399,7 +399,7 @@ int op_read(const CFGMODEL* m, wchar_t drive)
     wchar_t fullpath[MAX_PATH];
     _snwprintf(fullpath, MAX_PATH, L"%c:\\%s", drive, best);
     applog(CH_ENGINE, LOG_INFO, L"[%s] 命中文件：%s", OP, best);
-    post_moninfo(L"文件已找到", fullpath);
+    post_moninfo(L"文件已找到", fullpath, 0);
 
     /* 通配符可变部分捕获（对纯文件名模式与纯文件名比较） */
     wchar_t cap[128] = L"";
@@ -424,6 +424,7 @@ int op_read(const CFGMODEL* m, wchar_t drive)
     {
         wchar_t empty[2] = L"";
         post_filecontent(empty, 1);          /* 先清右窗格 */
+        post_moninfo(L"第二文件", L"", 1);   /* 清右窗格专属提示行 */
         for (int i = 0; i < nhits; i++) {
             if (_wcsicmp(hits[i], best) == 0) continue;
             wchar_t p2[MAX_PATH];
@@ -432,6 +433,7 @@ int op_read(const CFGMODEL* m, wchar_t drive)
             if (read_file_text(p2, &t2) && t2) {
                 applog(CH_ENGINE, LOG_INFO, L"[%s] 第二文件：%s（右窗格）", OP, hits[i]);
                 post_filecontent(t2, 1);
+                post_moninfo(L"第二文件", p2, 1);
                 free(t2);
             } else {
                 applog(CH_ENGINE, LOG_WARN, L"[%s] 第二文件读取失败：%s（错误码 %lu）", OP, hits[i], GetLastError());

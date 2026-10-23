@@ -31,7 +31,8 @@
 #define IDC_BTN_RWTEST      1016   /* 读写测试：写读 MD5 比对 + 速率            */
 #define IDC_STC_INSERTCOUNT 1017   /* 插拔计数器：每次插入 U 盘 +1（启动清零）  */
 #define IDC_STC_MONSTATUS   1102   /* 监控状态行（居中，如"监控已停止"）       */
-#define IDC_STC_MONFILE     1103   /* 命中文件行（居中蓝色，如"找到文件: F:\readme.txt"） */
+#define IDC_STC_MONFILE     1103   /* 命中文件行·左窗格专属（居中蓝色，1502 的提示）  */
+#define IDC_STC_MONFILE2    1108   /* 命中文件行·右窗格专属（1503 的提示）            */
 
 /* ---------- PANE_LABEL ---------- */
 #define IDC_STC_LABEL       1101   /* 标签信息行                               */
