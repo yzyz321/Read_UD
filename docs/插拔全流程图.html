@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>U盘插拔全流程图 — UdiskTools</title>
+<style>
+  :root {
+    --c-primary: #2563EB; --c-accent: #EA580C; --c-success: #059669;
+    --c-danger: #DC2626; --c-neutral: #475569; --c-bg: #F8FAFC; --c-surface: #FFFFFF;
+    --font: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--c-bg); font-family: var(--font); color: var(--c-neutral); }
+  .canvas { width: 1280px; margin: 0 auto; padding: 40px 48px 56px; background: var(--c-bg); }
+  .diagram-title { font-size: 26px; font-weight: 700; color: #1E293B; text-align: center; margin-bottom: 6px; }
+  .diagram-subtitle { font-size: 14px; color: #64748B; text-align: center; margin-bottom: 32px; }
+  h2.sec { font-size: 19px; color: #1E293B; margin: 46px 0 4px; border-left: 5px solid var(--c-primary); padding-left: 12px; }
+  p.secnote { font-size: 13px; color: #64748B; margin: 0 0 14px 17px; }
+  svg { display: block; margin: 0 auto; overflow: visible; }
+  .node-process   { fill: var(--c-surface); stroke: var(--c-primary); stroke-width: 2; }
+  .node-decision  { fill: #FFF7ED; stroke: var(--c-accent);  stroke-width: 2; }
+  .node-terminal  { fill: var(--c-primary); stroke: none; }
+  .node-output    { fill: #ECFDF5; stroke: var(--c-success); stroke-width: 2; }
+  .node-secondary { fill: #F1F5F9; stroke: var(--c-neutral); stroke-width: 1.5; }
+  .node-danger    { fill: #FEF2F2; stroke: var(--c-danger);  stroke-width: 2; }
+  .node-text  { font-size: 15px; fill: #1E293B; text-anchor: middle; dominant-baseline: middle; }
+  .node-sub   { font-size: 12px; fill: #64748B; text-anchor: middle; dominant-baseline: middle; }
+  .term-text  { font-size: 15px; fill: #FFFFFF; text-anchor: middle; dominant-baseline: middle; font-weight: 600; }
+  .edge       { stroke: #94A3B8; stroke-width: 2; fill: none; }
+  .edge-back  { stroke-dasharray: 6 4; }
+  .edge-label { font-size: 13px; fill: #64748B; }
+  .legend { display: flex; gap: 22px; justify-content: center; margin-top: 26px; font-size: 13px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 8px; }
+  .legend-swatch { width: 16px; height: 16px; border-radius: 4px; border: 2px solid; }
+  table.keys { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 10px; background:#fff; }
+  table.keys th { background: #EFF6FF; color: #1E293B; padding: 8px 10px; border: 1px solid #DBEAFE; text-align: left; }
+  table.keys td { padding: 7px 10px; border: 1px solid #E2E8F0; vertical-align: top; }
+  table.keys td.k { font-family: Consolas, monospace; color: #1D4ED8; white-space: nowrap; }
+  table.keys td.w { color: #B45309; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="canvas">
+  <div class="diagram-title">U盘插拔全流程图（UdiskTools v1.0）</div>
+  <div class="diagram-subtitle">主线：插盘检测 → AUTO/MANUAL 分流 → 整任务四步（识别·复制·读取判定·测试）→ 结果显示 → 拔出复位 → 循环；判断条件见橙色菱形</div>
+
+  <!-- ===================== 图 1：主流程 ===================== -->
+  <h2 class="sec">图 1 · 主流程：插入 → 执行 → 拔出（循环）</h2>
+  <p class="secnote">核心分流：只有「监控开启 或 AUTORUN=1」插盘才自动执行；否则停在 MANUAL 等手动按钮。</p>
+  <svg width="1184" height="1095" viewBox="0 0 1184 1095" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/>
+      </marker>
+    </defs>
+    <rect class="node-terminal" x="442" y="20" width="300" height="48" rx="22"/>
+    <text class="term-text" x="592" y="45">程序启动：加载 ini · 选机型</text>
+    <path class="edge" d="M592,68 L592,92" marker-end="url(#arrow)"/>
+
+    <rect class="node-process" x="412" y="96" width="360" height="52" rx="8"/>
+    <text class="node-text" x="592" y="123">轮询检测可移动磁盘</text>
+    <path class="edge" d="M592,148 L592,178" marker-end="url(#arrow)"/>
+
+    <polygon class="node-decision" points="592,182 732,240 592,298 452,240"/>
+    <text class="node-text" x="592" y="240">检测到插盘？</text>
+    <path class="edge edge-back" d="M732,240 L1010,240 L1010,122 L776,122" marker-end="url(#arrow)"/>
+    <text class="edge-label" x="748" y="226">否</text>
+    <path class="edge" d="M592,298 L592,326" marker-end="url(#arrow)"/>
+    <text class="edge-label" x="606" y="316">是</text>
+
+    <rect class="node-process" x="372" y="330" width="440" height="52" rx="8"/>
+    <text class="node-text" x="592" y="357">清空上一轮状态：徽标·进度条·文件窗格·控制台</text>
+    <path class="edge" d="M592,382 L592,412" marker-end="url(#arrow)"/>
+
+    <polygon class="node-decision" points="592,416 752,484 592,552 432,484"/>
+    <text class="node-text" x="592" y="484">监控开启 或 AUTORUN=1？</text>
+    <path class="edge" d="M752,484 L866,484" marker-end="url(#arrow)"/>
+    <text class="edge-label" x="764" y="470">否</text>
+    <path class="edge" d="M592,552 L592,584" marker-end="url(#arrow)"/>
+    <text class="edge-label" x="606" y="570">是</text>
+
+    <rect class="node-secondary" x="870" y="452" width="280" height="64" rx="8"/>
+    <text class="node-text" x="1010" y="478">MANUAL：仅刷新设备信息</text>
+    <text class="node-sub" x="1010" y="500">等待手动按钮 / 热键 T·C（使能键控制置灰）</text>
+    <path class="edge edge-back" d="M1010,516 L1010,794 L836,794" marker-end="url(#arrow)"/>
+    <text class="edge-label" x="846" y="780">手动单操作结果</text>
+
+    <rect class="node-process" x="402" y="588" width="380" height="52" rx="8"/>
+    <text class="node-text" x="592" y="615">插拔计数 +1（仅监控开启时，0000 循环）</text>
+    <path class="edge" d="M592,640 L592,672" marker-end="url(#arrow)"/>
+
+    <rect class="node-process" x="382" y="676" width="420" height="52" rx="8"/>
+    <text class="node-text" x="592" y="703">执行整任务线程（详见子图 A）</text>
+    <path class="edge" d="M592,728 L592,760" marker-end="url(#arrow)"/>
+
+    <rect class="node-output" x="352" y="764" width="480" height="52" rx="8"/>
+    <text class="node-text" x="592" y="791">结果显示：绿=任务完成/已停止　红=出错徽标</text>
+    <path class="edge" d="M592,816 L592,848" marker-end="url(#arrow)"/>
+
+    <polygon class="node-decision" points="592,852 732,910 592,968 452,910"/>
+    <text class="node-text" x="592" y="910">U 盘拔出？</text>
+    <path class="edge edge-back" d="M452,910 L130,910 L130,136 L408,136" marker-end="url(#arrow)"/>
+    <text class="edge-label" x="330" y="896">否（继续显示结果）</text>
+    <path class="edge" d="M592,968 L592,1000" marker-end="url(#arrow)"/>
+    <text class="edge-label" x="606" y="988">是</text>
+
+    <rect class="node-process" x="362" y="1004" width="460" height="52" rx="8"/>
+    <text class="node-text" x="592" y="1031">进度条复位 · 设备状态刷新（未检测到磁盘）</text>
+    <path class="edge edge-back" d="M362,1030 L60,1030 L60,108 L408,108" marker-end="url(#arrow)"/>
+    <text class="edge-label" x="66" y="1016">循环：继续轮询</text>
+  </svg>
+
+  <!-- ===================== 子图 A ===================== -->
+  <h2 class="sec">子图 A · 整任务线程（自动 / 手动共用，串行四步）</h2>
+  <p class="secnote">右侧灰/红框为「跳过（记日志）」与「错误」出口，最后统一汇入任务结束；任务执行中新请求被忽略（g_running 互斥）。</p>
+  <svg width="1184" height="1255" viewBox="0 0 1184 1255" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrowA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/>
+      </marker>
+    </defs>
+    <rect class="node-terminal" x="270" y="20" width="300" height="48" rx="22"/>
+    <text class="term-text" x="420" y="45">任务触发：插盘自动 / 手动</text>
+    <path class="edge" d="M420,68 L420,92" marker-end="url(#arrowA)"/>
+
+    <rect class="node-process" x="220" y="96" width="400" height="52" rx="8"/>
+    <text class="node-text" x="420" y="123">选取第一个可移动盘符</text>
+    <path class="edge" d="M420,148 L420,180" marker-end="url(#arrowA)"/>
+
+    <polygon class="node-decision" points="420,184 560,242 420,300 280,242"/>
+    <text class="node-text" x="420" y="242">有可移动磁盘？</text>
+    <path class="edge" d="M560,242 L686,242" marker-end="url(#arrowA)"/>
+    <text class="edge-label" x="574" y="228">否</text>
+    <rect class="node-danger" x="690" y="214" width="310" height="56" rx="8"/>
+    <text class="node-text" x="845" y="242">报错：没有可移动磁盘</text>
+    <path class="edge edge-back" d="M1000,242 L1015,242 L1015,1194 L654,1194" marker-end="url(#arrowA)"/>
+    <path class="edge" d="M420,300 L420,332" marker-end="url(#arrowA)"/>
+    <text class="edge-label" x="434" y="318">是</text>
+
+    <rect class="node-process" x="200" y="336" width="440" height="64" rx="8"/>
+    <text class="node-text" x="420" y="360">USB 识别：卷标 / 序列号 / USB 速度</text>
+    <text class="node-sub" x="420" y="384">使能键 ENABLE_USBINFO=0 → 跳过本步</text>
+    <path class="edge" d="M420,400 L420,432" marker-end="url(#arrowA)"/>
+
+    <polygon class="node-decision" points="420,436 560,494 420,552 280,494"/>
+    <text class="node-text" x="420" y="486">手动触发 或</text>
+    <text class="node-text" x="420" y="508">AUTO_COPY=1？</text>
+    <path class="edge" d="M560,494 L686,494" marker-end="url(#arrowA)"/>
+    <text class="edge-label" x="574" y="480">否</text>
+    <rect class="node-secondary" x="690" y="466" width="310" height="56" rx="8"/>
+    <text class="node-text" x="845" y="494">跳过自动复制（记日志）</text>
+    <text class="node-sub" x="845" y="514">可手动点〔复制〕按钮补做</text>
+    <path class="edge edge-back" d="M1000,494 L1015,494" marker-end="url(#arrowA)"/>
+    <path class="edge" d="M420,552 L420,584" marker-end="url(#arrowA)"/>
+    <text class="edge-label" x="434" y="572">是</text>
+
+    <rect class="node-process" x="220" y="588" width="400" height="52" rx="8"/>
+    <text class="node-text" x="420" y="615">复制文件（详见子图 B）</text>
+    <path class="edge" d="M420,640 L420,672" marker-end="url(#arrowA)"/>
+
+    <polygon class="node-decision" points="420,676 560,734 420,792 280,734"/>
+    <text class="node-text" x="420" y="734">ENABLE_READ=1？</text>
+    <path class="edge" d="M560,734 L686,734" marker-end="url(#arrowA)"/>
+    <text class="edge-label" x="574" y="720">否</text>
+    <rect class="node-secondary" x="690" y="706" width="310" height="56" rx="8"/>
+    <text class="node-text" x="845" y="734">跳过读取（记日志）</text>
+    <path class="edge edge-back" d="M1000,734 L1015,734" marker-end="url(#arrowA)"/>
+    <path class="edge" d="M420,792 L420,824" marker-end="url(#arrowA)"/>
+    <text class="edge-label" x="434" y="812">是</text>
+
+    <rect class="node-process" x="220" y="828" width="400" height="52" rx="8"/>
+    <text class="node-text" x="420" y="855">读取文件 + 判定（详见子图 C）</text>
+    <path class="edge" d="M420,880 L420,912" marker-end="url(#arrowA)"/>
+
+    <polygon class="node-decision" points="420,916 560,974 420,1032 280,974"/>
+    <text class="node-text" x="420" y="966">手动触发 或</text>
+    <text class="node-text" x="420" y="988">AUTO_TEST=1？</text>
+    <path class="edge" d="M560,974 L686,974" marker-end="url(#arrowA)"/>
+    <text class="edge-label" x="574" y="960">否</text>
+    <rect class="node-secondary" x="690" y="946" width="310" height="56" rx="8"/>
+    <text class="node-text" x="845" y="974">跳过自动测试（记日志）</text>
+    <text class="node-sub" x="845" y="994">可手动点〔读写测试〕按钮补做</text>
+    <path class="edge edge-back" d="M1000,974 L1015,974" marker-end="url(#arrowA)"/>
+    <path class="edge" d="M420,1032 L420,1064" marker-end="url(#arrowA)"/>
+    <text class="edge-label" x="434" y="1052">是</text>
+
+    <rect class="node-process" x="200" y="1068" width="440" height="64" rx="8"/>
+    <text class="node-text" x="420" y="1092">读写测试：写 8MB → 回读 → MD5 比对</text>
+    <text class="node-sub" x="420" y="1116">比对不一致 → 报「可能存在坏块」</text>
+    <path class="edge" d="M420,1132 L420,1164" marker-end="url(#arrowA)"/>
+
+    <rect class="node-output" x="190" y="1168" width="460" height="52" rx="8"/>
+    <text class="node-text" x="420" y="1195">任务结束：成功=绿　已停止=绿　有错误=红</text>
+  </svg>
+
+  <!-- ===================== 子图 B ===================== -->
+  <h2 class="sec">子图 B · 复制文件 op_write（条件链）</h2>
+  <p class="secnote">五道前置判断逐级放行；任一不满足即从右侧出口返回任务；复制循环内含 MD5 校验判断。</p>
+  <svg width="1184" height="1355" viewBox="0 0 1184 1355" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrowB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/>
+      </marker>
+    </defs>
+    <rect class="node-terminal" x="270" y="20" width="300" height="48" rx="22"/>
+    <text class="term-text" x="420" y="45">进入写入 op_write</text>
+    <path class="edge" d="M420,68 L420,100" marker-end="url(#arrowB)"/>
+
+    <polygon class="node-decision" points="420,104 560,162 420,220 280,162"/>
+    <text class="node-text" x="420" y="162">ENABLE_WRITE=1？</text>
+    <path class="edge" d="M560,162 L686,162" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="574" y="148">否</text>
+    <rect class="node-secondary" x="690" y="134" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="162">跳过（日志：本机型已禁用写入）</text>
+    <path class="edge edge-back" d="M1010,162 L1030,162" marker-end="url(#arrowB)"/>
+    <path class="edge" d="M420,220 L420,252" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="434" y="240">是</text>
+
+    <polygon class="node-decision" points="420,256 560,314 420,372 280,314"/>
+    <text class="node-text" x="420" y="314">WRITEMODE=COPY？</text>
+    <path class="edge" d="M560,314 L686,314" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="574" y="300">否</text>
+    <rect class="node-secondary" x="690" y="286" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="314">跳过（PROCESSED 为 v1.x 预留）</text>
+    <path class="edge edge-back" d="M1010,314 L1030,314" marker-end="url(#arrowB)"/>
+    <path class="edge" d="M420,372 L420,404" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="434" y="392">是</text>
+
+    <polygon class="node-decision" points="420,408 560,466 420,524 280,466"/>
+    <text class="node-text" x="420" y="466">SRCPATH 已配置？</text>
+    <path class="edge" d="M560,466 L686,466" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="574" y="452">否</text>
+    <rect class="node-secondary" x="690" y="438" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="466">跳过（未配置 SRCPATH）</text>
+    <path class="edge edge-back" d="M1010,466 L1030,466" marker-end="url(#arrowB)"/>
+    <path class="edge" d="M420,524 L420,556" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="434" y="544">是</text>
+
+    <polygon class="node-decision" points="420,560 560,618 420,676 280,618"/>
+    <text class="node-text" x="420" y="618">源目录存在？</text>
+    <path class="edge" d="M560,618 L686,618" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="574" y="604">否</text>
+    <rect class="node-danger" x="690" y="590" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="618">错误：源目录不存在（红徽标）</text>
+    <path class="edge edge-back" d="M1010,618 L1030,618" marker-end="url(#arrowB)"/>
+    <path class="edge" d="M420,676 L420,708" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="434" y="696">是</text>
+
+    <polygon class="node-decision" points="420,712 560,770 420,828 280,770"/>
+    <text class="node-text" x="420" y="770">有匹配文件？</text>
+    <path class="edge" d="M560,770 L686,770" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="574" y="756">否</text>
+    <rect class="node-danger" x="690" y="742" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="770">错误：目录存在但无匹配文件</text>
+    <path class="edge edge-back" d="M1010,770 L1030,770" marker-end="url(#arrowB)"/>
+    <path class="edge" d="M420,828 L420,860" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="434" y="848">是</text>
+
+    <rect class="node-process" x="190" y="864" width="460" height="76" rx="8"/>
+    <text class="node-text" x="420" y="890">自动建立目标目录 → 逐文件复制</text>
+    <text class="node-sub" x="420" y="914">目标同名文件覆盖；进度条按字节推进</text>
+    <path class="edge" d="M420,940 L420,972" marker-end="url(#arrowB)"/>
+
+    <polygon class="node-decision" points="420,976 560,1034 420,1092 280,1034"/>
+    <text class="node-text" x="420" y="1034">MD5 一致？（HASH=md5）</text>
+    <path class="edge" d="M560,1034 L686,1034" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="574" y="1020">否</text>
+    <rect class="node-danger" x="690" y="1006" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="1034">计失败：MD5 不一致（继续下一文件）</text>
+    <path class="edge edge-back" d="M1010,1034 L1030,1034" marker-end="url(#arrowB)"/>
+    <path class="edge" d="M420,1092 L420,1124" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="434" y="1112">是</text>
+    <path class="edge edge-back" d="M280,1034 L100,1034 L100,902 L186,902" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="108" y="978">下一个文件</text>
+
+    <polygon class="node-decision" points="420,1128 560,1186 420,1244 280,1186"/>
+    <text class="node-text" x="420" y="1186">有失败文件？</text>
+    <path class="edge" d="M560,1186 L686,1186" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="574" y="1172">是</text>
+    <rect class="node-danger" x="690" y="1158" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="1186">错误：n 个文件失败</text>
+    <path class="edge edge-back" d="M1010,1186 L1030,1186" marker-end="url(#arrowB)"/>
+    <path class="edge" d="M420,1244 L420,1268" marker-end="url(#arrowB)"/>
+    <text class="edge-label" x="434" y="1262">否</text>
+
+    <rect class="node-output" x="290" y="1272" width="260" height="48" rx="8"/>
+    <text class="node-text" x="420" y="1297">写入完成（绿日志）</text>
+
+    <rect class="node-secondary" x="880" y="1272" width="280" height="48" rx="8"/>
+    <text class="node-text" x="1020" y="1297">返回整任务（记入结果 rc）</text>
+    <path class="edge edge-back" d="M1030,162 L1030,1296 L1164,1296" marker-end="url(#arrowB)"/>
+  </svg>
+
+  <!-- ===================== 子图 C ===================== -->
+  <h2 class="sec">子图 C · 读取 + 判定 op_read（核心校验）</h2>
+  <p class="secnote">命中文件三重筛选：有没有 → 是否唯一（STRICT）→ 规则链（READRULE）；PASS/FAIL 直接驱动绿/红徽标。</p>
+  <svg width="1184" height="1245" viewBox="0 0 1184 1245" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrowC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/>
+      </marker>
+    </defs>
+    <rect class="node-terminal" x="270" y="20" width="300" height="48" rx="22"/>
+    <text class="term-text" x="420" y="45">进入读取 op_read</text>
+    <path class="edge" d="M420,68 L420,100" marker-end="url(#arrowC)"/>
+
+    <polygon class="node-decision" points="420,104 560,162 420,220 280,162"/>
+    <text class="node-text" x="420" y="162">ENABLE_READ=1？</text>
+    <path class="edge" d="M560,162 L686,162" marker-end="url(#arrowC)"/>
+    <text class="edge-label" x="574" y="148">否</text>
+    <rect class="node-secondary" x="690" y="134" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="162">跳过（本机型已禁用读取）</text>
+    <path class="edge edge-back" d="M1010,162 L1030,162" marker-end="url(#arrowC)"/>
+    <path class="edge" d="M420,220 L420,252" marker-end="url(#arrowC)"/>
+    <text class="edge-label" x="434" y="240">是</text>
+
+    <polygon class="node-decision" points="420,256 560,314 420,372 280,314"/>
+    <text class="node-text" x="420" y="314">READFILE 已配置？</text>
+    <path class="edge" d="M560,314 L686,314" marker-end="url(#arrowC)"/>
+    <text class="edge-label" x="574" y="300">否</text>
+    <rect class="node-secondary" x="690" y="286" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="314">跳过（未配置 READFILE）</text>
+    <path class="edge edge-back" d="M1010,314 L1030,314" marker-end="url(#arrowC)"/>
+    <path class="edge" d="M420,372 L420,404" marker-end="url(#arrowC)"/>
+    <text class="edge-label" x="434" y="392">是</text>
+
+    <rect class="node-process" x="190" y="408" width="460" height="64" rx="8"/>
+    <text class="node-text" x="420" y="432">扫描 U 盘（READFILE 支持子目录前缀）</text>
+    <text class="node-sub" x="420" y="456">READPATTERN=REGEX 当前按 WILDCARD 处理（v1.0 预留）</text>
+    <path class="edge" d="M420,472 L420,504" marker-end="url(#arrowC)"/>
+
+    <polygon class="node-decision" points="420,508 560,566 420,624 280,566"/>
+    <text class="node-text" x="420" y="566">无命中文件？</text>
+    <path class="edge" d="M560,566 L686,566" marker-end="url(#arrowC)"/>
+    <text class="edge-label" x="574" y="552">是</text>
+    <rect class="node-danger" x="690" y="538" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="566">判定 FAIL：未找到匹配文件</text>
+    <path class="edge edge-back" d="M1010,566 L1030,566" marker-end="url(#arrowC)"/>
+    <path class="edge" d="M420,624 L420,656" marker-end="url(#arrowC)"/>
+    <text class="edge-label" x="434" y="644">否</text>
+
+    <polygon class="node-decision" points="420,660 560,718 420,776 280,718"/>
+    <text class="node-text" x="420" y="710">多命中 且</text>
+    <text class="node-text" x="420" y="732">MATCH_POLICY=STRICT？</text>
+    <path class="edge" d="M560,718 L686,718" marker-end="url(#arrowC)"/>
+    <text class="edge-label" x="574" y="704">是</text>
+    <rect class="node-danger" x="690" y="690" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="718">判定 FAIL：多命中需人工确认</text>
+    <path class="edge edge-back" d="M1010,718 L1030,718" marker-end="url(#arrowC)"/>
+    <path class="edge" d="M420,776 L420,808" marker-end="url(#arrowC)"/>
+    <text class="edge-label" x="434" y="796">否</text>
+
+    <rect class="node-process" x="190" y="812" width="460" height="76" rx="8"/>
+    <text class="node-text" x="420" y="838">按 MATCH_POLICY 选定唯一命中</text>
+    <text class="node-sub" x="420" y="862">NEWEST=最新时间　FIRST=首个（其余取第一个兜底）</text>
+    <path class="edge" d="M420,888 L420,920" marker-end="url(#arrowC)"/>
+
+    <rect class="node-process" x="190" y="924" width="460" height="52" rx="8"/>
+    <text class="node-text" x="420" y="951">读取文件内容；第二命中 → 右窗格显示</text>
+    <path class="edge" d="M420,976 L420,1008" marker-end="url(#arrowC)"/>
+
+    <polygon class="node-decision" points="420,1012 560,1070 420,1128 280,1070"/>
+    <text class="node-text" x="420" y="1062">READRULE 规则全通过？</text>
+    <text class="node-sub" x="420" y="1086">MIN_LEN:n · MUST_CONTAIN:k（; 分隔）</text>
+    <path class="edge" d="M560,1070 L686,1070" marker-end="url(#arrowC)"/>
+    <text class="edge-label" x="574" y="1056">否</text>
+    <rect class="node-danger" x="690" y="1042" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="1070">判定 FAIL：输出失败原因（红徽标）</text>
+    <path class="edge edge-back" d="M1010,1070 L1030,1070" marker-end="url(#arrowC)"/>
+    <path class="edge" d="M420,1128 L420,1160" marker-end="url(#arrowC)"/>
+    <text class="edge-label" x="434" y="1150">是</text>
+
+    <rect class="node-output" x="290" y="1164" width="260" height="48" rx="8"/>
+    <text class="node-text" x="420" y="1189">PASS（绿）：内容显示左窗格</text>
+
+    <rect class="node-secondary" x="880" y="1164" width="280" height="48" rx="8"/>
+    <text class="node-text" x="1020" y="1189">返回整任务（rc=1）</text>
+    <path class="edge edge-back" d="M1030,566 L1030,1188 L1164,1188" marker-end="url(#arrowC)"/>
+  </svg>
+
+  <!-- ===================== 子图 D ===================== -->
+  <h2 class="sec">子图 D · 格式化 op_format（仅手动按钮触发）</h2>
+  <p class="secnote">自动整任务不含格式化；CONFIRM=1 时先弹窗，操作员取消即终止。</p>
+  <svg width="1184" height="815" viewBox="0 0 1184 815" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrowD" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/>
+      </marker>
+    </defs>
+    <rect class="node-terminal" x="270" y="20" width="300" height="48" rx="22"/>
+    <text class="term-text" x="420" y="45">点〔格式化〕按钮（手动）</text>
+    <path class="edge" d="M420,68 L420,100" marker-end="url(#arrowD)"/>
+
+    <polygon class="node-decision" points="420,104 560,162 420,220 280,162"/>
+    <text class="node-text" x="420" y="162">ENABLE_FORMAT=1？</text>
+    <path class="edge" d="M560,162 L686,162" marker-end="url(#arrowD)"/>
+    <text class="edge-label" x="574" y="148">否</text>
+    <rect class="node-secondary" x="690" y="134" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="162">按钮置灰（不可点击）</text>
+    <path class="edge" d="M420,220 L420,252" marker-end="url(#arrowD)"/>
+    <text class="edge-label" x="434" y="240">是</text>
+
+    <polygon class="node-decision" points="420,256 560,314 420,372 280,314"/>
+    <text class="node-text" x="420" y="314">CONFIRM=1？</text>
+    <path class="edge edge-back" d="M560,314 L620,314 L620,680 L654,680" marker-end="url(#arrowD)"/>
+    <text class="edge-label" x="566" y="300">否（直接执行）</text>
+    <path class="edge" d="M420,372 L420,404" marker-end="url(#arrowD)"/>
+    <text class="edge-label" x="434" y="392">是</text>
+
+    <rect class="node-process" x="220" y="408" width="400" height="52" rx="8"/>
+    <text class="node-text" x="420" y="435">弹窗：确认格式化 X: 盘？</text>
+    <path class="edge" d="M420,460 L420,492" marker-end="url(#arrowD)"/>
+
+    <polygon class="node-decision" points="420,496 560,554 420,612 280,554"/>
+    <text class="node-text" x="420" y="554">操作员点确定？</text>
+    <path class="edge" d="M560,554 L686,554" marker-end="url(#arrowD)"/>
+    <text class="edge-label" x="574" y="540">否</text>
+    <rect class="node-secondary" x="690" y="526" width="320" height="56" rx="8"/>
+    <text class="node-text" x="850" y="554">取消：rc=2（任务已停止，绿徽标）</text>
+    <path class="edge" d="M420,612 L420,644" marker-end="url(#arrowD)"/>
+    <text class="edge-label" x="434" y="632">是</text>
+
+    <rect class="node-process" x="190" y="648" width="460" height="64" rx="8"/>
+    <text class="node-text" x="420" y="672">FormatEx 快速格式化（FILESYSTEM）</text>
+    <text class="node-sub" x="420" y="696">成功后写卷标 VOLUME；进度条按 fmifs 回调推进</text>
+    <path class="edge" d="M420,712 L420,744" marker-end="url(#arrowD)"/>
+
+    <rect class="node-output" x="290" y="748" width="260" height="48" rx="8"/>
+    <text class="node-text" x="420" y="773">格式化完成（绿日志）</text>
+  </svg>
+
+  <!-- ===================== 对照表 ===================== -->
+  <h2 class="sec">配置键 → 判断位置对照表</h2>
+  <p class="secnote">「使能键决定按钮与步骤、AUTORUN/监控决定自动与否、AUTO_* 只裁剪自动流程内的步骤」——三层职责分离。</p>
+  <table class="keys">
+    <tr><th style="width:170px">配置键</th><th style="width:150px">判断位置</th><th>取值与作用</th></tr>
+    <tr><td class="k">（监控开关）</td><td class="w">图1 · 菱形②</td><td>点〔开始监控〕=1；与 AUTORUN 任一为真 → 1104 显示 AUTO，插盘自动执行整任务</td></tr>
+    <tr><td class="k">AUTORUN</td><td class="w">图1 · 菱形②</td><td>1=插盘即自动执行（无需开监控）；0=需先开监控或手动</td></tr>
+    <tr><td class="k">AUTO_COPY</td><td class="w">子图A · 菱形②</td><td>自动流程内是否复制：手动触发总是复制；自动触发须 1 才执行（0=仅手动点〔复制〕）</td></tr>
+    <tr><td class="k">AUTO_TEST</td><td class="w">子图A · 菱形④</td><td>自动流程内是否读写测试：手动触发总是执行；自动触发须 1（默认 0）</td></tr>
+    <tr><td class="k">ENABLE_USBINFO</td><td class="w">子图A · 步骤①</td><td>0=跳过 USB 识别（卷标/序列号/速度）</td></tr>
+    <tr><td class="k">ENABLE_WRITE</td><td class="w">子图B · 菱形①</td><td>0=跳过写入，且主界面〔复制〕按钮置灰</td></tr>
+    <tr><td class="k">WRITEMODE</td><td class="w">子图B · 菱形②</td><td>COPY=简单复制；PROCESSED=v1.x 预留（本次跳过）</td></tr>
+    <tr><td class="k">HASH</td><td class="w">子图B · 菱形⑥</td><td>md5=每个文件复制后做源/目标 MD5 比对，不一致计失败</td></tr>
+    <tr><td class="k">ENABLE_READ</td><td class="w">子图C · 菱形①</td><td>0=跳过读取，且〔读取校验〕按钮置灰</td></tr>
+    <tr><td class="k">READFILE</td><td class="w">子图C · 菱形②</td><td>未配置→跳过；支持子目录前缀（如 SYSTEM\PAW6K-LSN）</td></tr>
+    <tr><td class="k">MATCH_POLICY</td><td class="w">子图C · 菱形④</td><td>NEWEST=最新时间；FIRST=首个；STRICT=多命中直接 FAIL</td></tr>
+    <tr><td class="k">READPATTERN</td><td class="w">子图C · 步骤③</td><td>WILDCARD 通配；REGEX 为后续版本（暂按 WILDCARD）</td></tr>
+    <tr><td class="k">READRULE</td><td class="w">子图C · 菱形⑤</td><td>MIN_LEN:n 最小长度；MUST_CONTAIN:k 必含关键字；全通过=PASS（绿）</td></tr>
+    <tr><td class="k">ENABLE_FORMAT</td><td class="w">子图D · 菱形①</td><td>0=〔格式化〕按钮置灰</td></tr>
+    <tr><td class="k">CONFIRM</td><td class="w">子图D · 菱形②</td><td>1=格式化前弹窗确认（取消则终止）</td></tr>
+    <tr><td class="k">FILESYSTEM / VOLUME</td><td class="w">子图D · 步骤⑤</td><td>格式化文件系统与卷标（FAT32/EXFAT）</td></tr>
+    <tr><td class="k">SRCPATH / DSTPATH</td><td class="w">子图B · 菱形③④</td><td>写入源与目标；源目录不存在或无匹配文件即报错</td></tr>
+  </table>
+
+  <div class="legend">
+    <div class="legend-item"><span class="legend-swatch" style="background:#fff;border-color:#2563EB"></span>过程/步骤</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#FFF7ED;border-color:#EA580C"></span>条件判断（菱形）</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#2563EB;border-color:#2563EB"></span>起止</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#ECFDF5;border-color:#059669"></span>成功输出</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#FEF2F2;border-color:#DC2626"></span>错误/FAIL</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#F1F5F9;border-color:#475569"></span>跳过/返回（记日志）</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#F8FAFC;border-color:#94A3B8"></span>虚线 = 回流/手动支线</div>
+  </div>
+</div>
+</body>
+</html>
