@@ -5,6 +5,9 @@
 #ifndef RESOURCE_H
 #define RESOURCE_H
 
+/* ---------- 图标（res/udisktools.rc；图标资源类型与对话框 ID 不同命名空间） ---------- */
+#define IDI_APP_ICON        101
+
 /* ---------- 主窗口 ---------- */
 #define WND_MAIN            100
 #define WND_CONFIG          101
@@ -19,7 +22,9 @@
 #define IDC_BTN_WRITELABEL  1006   /* 写入标签（机型可覆盖显示名，如"升级"）    */
 #define IDC_BTN_CONFIG      1007   /* 配置 → WND_CONFIG                        */
 #define IDC_CHK_TOPMOST     1008   /* 窗口置顶复选框 HWND_TOPMOST/NOTOPMOST    */
-#define IDC_CHK_HOTKEY      1013   /* 快捷键使能复选框（T/C 全局热键开关）     */
+#define IDC_CHK_AUTO_COPY   1009   /* AUTO_COPY 只读状态框（灰，仅显示配置值）  */
+#define IDC_CHK_AUTO_TEST   1018   /* AUTO_TEST 只读状态框（灰，仅显示配置值）  */
+#define IDC_CHK_HOTKEY      1013   /* 快捷键使能复选框（Ctrl+Alt+T/C 全局热键）*/
 /* 已废弃：IDC_STC_MODE（原"待机/模式标记"，v1.0.0-alpha.3 起取消） */
 
 /* ---------- PANE_BOTTOM 监控窗格（底部） ---------- */
@@ -38,6 +43,7 @@
 #define IDC_STC_LABEL       1101   /* 标签信息行                               */
 #define IDC_STC_AUTOMODE    1104   /* AUTO / MANUAL 状态标记（状态行前缀）      */
 #define IDC_STC_SRCPATH     1105   /* 当前机型 SRCPATH 显示行                  */
+#define IDC_STC_READRULE    1109   /* READRULE 判定规则标签（AUTO_TEST=1 显示）*/
 
 /* ---------- PANE_STATUS ---------- */
 #define IDC_STC_DEVICE      1201   /* 设备状态                                 */
@@ -50,7 +56,7 @@
 
 /* ---------- PANE_CMDS ---------- */
 #define IDC_EDIT_ENGINE     1401   /* CMD-A 操作引擎输出                       */
-#define IDC_EDIT_IDENT      1402   /* CMD-B 标识生成输出                       */
+#define IDC_EDIT_IDENT      1402   /* 预留（标识生成扩展）                     */
 
 /* ---------- PANE_FILE ---------- */
 #define IDC_STC_READVERDICT 1501   /* 读取判定徽标 PASS/FAIL                   */
@@ -58,8 +64,8 @@
 #define IDC_EDIT_FILE2      1503   /* 内容显示右窗格（命中第二个文件）          */
 
 /* ---------- 热键 ---------- */
-#define ID_HOTKEY_T         2001   /* T = 读写测试                             */
-#define ID_HOTKEY_C         2002   /* C = 写入                                 */
+#define ID_HOTKEY_T         2001   /* Ctrl+Alt+T = 单操作“读写测试”            */
+#define ID_HOTKEY_C         2002   /* Ctrl+Alt+C = 单操作“复制”                */
 
 /* ---------- 配置窗口 WND_CONFIG（IDC_CFG_ 前缀） ---------- */
 #define IDC_CFG_LIST_MODELS 3001   /* 机型列表（显示 DISPLAYNAME）             */

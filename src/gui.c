@@ -1,6 +1,10 @@
 /* ============================================================
- * gui.c - 主窗口（WND_MAIN）+ 配置窗口（WND_CONFIG）
- * DPI：Per-Monitor V2（运行时声明），所有尺寸经 DPI 缩放
+ * gui.c - 主窗口（WND_MAIN / UDK_MAINCLASS）
+ * 职责：控件创建/布局、DPI（Per-Monitor V2）、设备轮询事件、
+ *       任务/单操作编排（worker 线程 + WM_APP_* 消息）、
+ *       配置重载与标题/按钮刷新、全局热键、退出等待。
+ * 拆分：配置窗口（UDK_CFGCLASS）在 gui_config.c；
+ *       两个文件共享符号见 gui_shared.h（勿在 gui.h 暴露内部符号）。
  * ============================================================ */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -11,6 +15,7 @@
 #include <string.h>
 
 #include "gui.h"
+#include "gui_shared.h"
 #include "resource.h"
 #include "util.h"
 #include "device.h"
@@ -22,26 +27,40 @@
 CONFIG g_cfg;
 wchar_t g_ini_path[MAX_PATH] = L"";
 volatile LONG g_running = 0;
+static HANDLE g_worker = NULL;      /* 当前工作线程句柄（WM_APP_TASKDONE 时 join 后关闭） */
+static BOOL g_closing = FALSE;      /* 退出流程中：忽略新的界面命令/重入 WM_CLOSE */
+static int g_exit_code = 0;         /* GUI 退出码：0=正常 / 1=GetMessage 失败 / 3=强制退出（P3-6） */
 
-static HINSTANCE g_hinst = NULL;
-static HWND g_hmain = NULL;
+HINSTANCE g_hinst = NULL;
+HWND g_hmain = NULL;
 static HWND g_hmodel = NULL, g_hlabel = NULL, g_hdev = NULL,
             g_herr = NULL, g_hprog = NULL, g_hcmd[2] = { NULL, NULL },
             g_hverdict = NULL, g_hfile[2] = { NULL, NULL }, g_hchk_top = NULL,
+            g_hchk_autocopy = NULL, g_hchk_autotest = NULL,
             g_hchk_hotkey = NULL, g_hautomode = NULL, g_hsrcpath = NULL,
-            g_hcount = NULL, g_hprogtitle = NULL, g_hprogpct = NULL;
+            g_hcount = NULL, g_hprogtitle = NULL, g_hprogpct = NULL,
+            g_hreadrule = NULL;
 static volatile LONG g_inscount = 0;    /* 插拔计数器：每次插入 +1（不持久化，退出即清零） */
 static BOOL g_hotkey_enabled = FALSE;   /* 快捷键使能（IDC_CHK_HOTKEY） */
-static HFONT g_font = NULL, g_font_mono = NULL, g_font_bold = NULL;
+HFONT g_font = NULL, g_font_mono = NULL, g_font_bold = NULL;
 static UINT g_dpi = 96;
 static DWORD g_dev_mask = 0;
-static int g_cur_model = 0;         /* 当前机型索引（与轮询解耦） */
+static wchar_t g_pending_drive = 0;  /* 任务执行中插入的盘：任务结束后补触发自动任务（0=无） */
+int g_cur_model = 0;         /* 当前机型索引（与轮询解耦） */
 static int g_ident_index = 0;       /* 标识生成计数 */
+static int g_single_op = -1;        /* >=0=正在执行/刚完成的单操作（OP_*），-1=整任务；用于完成文案 */
+static const wchar_t* g_riched_class = L"RICHEDIT50W";  /* P2-7：Msftedit 失败→RICHEDIT20W→STATIC */
+static BOOL g_riched_ok = TRUE;     /* 文本控件是否为 RichEdit（可安全使用 EM_* 富文本消息） */
 
 /* ---------- 监控窗格（PANE_BOTTOM） ---------- */
 static volatile LONG g_monitoring = 0;              /* 监控开关 */
 static HWND g_hmonbtn[3] = { NULL, NULL, NULL };    /* 开始/停止/退出 */
 static HWND g_hmonstatus = NULL, g_hmonfile = NULL, g_hmonfile2 = NULL;
+/* 配置窗口句柄（配置窗口段使用；字体刷新 dpi_update_font 需提前引用） */
+HWND g_hcfg = NULL;      /* 定义在此，gui_config.c 经 gui_shared.h 共享 */
+/* P3-1：IDC_STC_MONFILE/1108 是 STATIC，颜色不能再用 EM_SETCHARFORMAT，
+ * 改由 WM_CTLCOLORSTATIC 根据这里的颜色绘制。 */
+static COLORREF g_monfile_col = RGB(0, 90, 200), g_monfile2_col = RGB(0, 90, 200);
 static const COLORREF g_btncol[3] = {
     RGB(0, 150, 0),     /* 开始监控：绿 */
     RGB(210, 0, 0),     /* 停止监控：红 */
@@ -52,6 +71,8 @@ static const COLORREF g_btncol[3] = {
 static void update_srcpath_text(void);
 static void set_run_state(BOOL is_auto);
 static void refresh_run_state(void);
+static void update_auto_flags_ui(void);
+static void update_readrule_text(void);
 
 /* ---------- DPI 辅助 ---------- */
 static UINT get_system_dpi(void)
@@ -68,7 +89,7 @@ static UINT get_system_dpi(void)
     return dpi;
 }
 
-static int dpi_scale(int v) { return MulDiv(v, (int)g_dpi, 96); }
+int dpi_scale(int v) { return MulDiv(v, (int)g_dpi, 96); }
 
 static void dpi_init(void)
 {
@@ -102,18 +123,23 @@ static BOOL CALLBACK font_enum(HWND hc, LPARAM lp)
     return TRUE;
 }
 
-static void dpi_update_font(void)
+/* 按当前 DPI 重建字体：先创建新字体并替换所有控件字体，再删除旧字体，
+ * 避免控件仍持有已删除的 HFONT（P2-5 悬空字体）。
+ * 配置窗口是独立顶层窗口（不在 EnumChildWindows(g_hmain) 范围内），需单独广播。 */
+void dpi_update_font(void)
 {
-    if (g_font) DeleteObject(g_font);
-    if (g_font_mono) DeleteObject(g_font_mono);
-    if (g_font_bold) DeleteObject(g_font_bold);
     int h1 = -MulDiv(9, (int)g_dpi, 72);
-    g_font = CreateFontW(h1, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                         0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
-    g_font_mono = CreateFontW(h1, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                              0, 0, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-    g_font_bold = CreateFontW(h1, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
-                              0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    HFONT nf = CreateFontW(h1, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                           0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    HFONT nm = CreateFontW(h1, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                           0, 0, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+    HFONT nb = CreateFontW(h1, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
+                           0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    HFONT of = g_font, om = g_font_mono, ob = g_font_bold;
+    if (nf) g_font = nf;
+    if (nm) g_font_mono = nm;
+    if (nb) g_font_bold = nb;
+
     if (g_hmain) {
         EnumChildWindows(g_hmain, font_enum, (LPARAM)g_font);
         if (g_hcmd[0]) SendMessageW(g_hcmd[0], WM_SETFONT, (WPARAM)g_font_mono, TRUE);
@@ -123,6 +149,13 @@ static void dpi_update_font(void)
         if (g_hdev)    SendMessageW(g_hdev, WM_SETFONT, (WPARAM)g_font_bold, TRUE);  /* 设备状态粗体 */
         if (g_hcount)  SendMessageW(g_hcount, WM_SETFONT, (WPARAM)g_font_bold, TRUE); /* 插拔计数粗体 */
     }
+    if (g_hcfg && IsWindow(g_hcfg))
+        EnumChildWindows(g_hcfg, font_enum, (LPARAM)g_font);
+
+    /* 旧字体已无控件引用，安全删除（创建失败时保留旧字体） */
+    if (of && of != g_font) DeleteObject(of);
+    if (om && om != g_font_mono) DeleteObject(om);
+    if (ob && ob != g_font_bold) DeleteObject(ob);
 }
 
 /* ---------- 控制台（RichEdit 追加行） ---------- */
@@ -141,6 +174,7 @@ static COLORREF color_of(int lv)
 static void con_append(HWND h, const wchar_t* line, LOGLEVEL lv)
 {
     if (!h || !line) return;
+    if (!g_riched_ok) return;   /* P2-7：RichEdit 完全不可用时（STATIC 回退）不做 EM_* 富文本操作 */
     /* 限制长度（超限清空，防内存增长） */
     GETTEXTLENGTHEX gtl;
     gtl.flags = GTL_NUMCHARS;
@@ -181,7 +215,7 @@ static void con_append(HWND h, const wchar_t* line, LOGLEVEL lv)
 
 /* ---------- 控件状态刷新 ---------- */
 
-static void refresh_buttons(void)
+void refresh_buttons(void)
 {
     if (!g_hmain || g_cfg.nmodels <= 0) return;
     CFGMODEL* m = &g_cfg.models[g_cur_model];
@@ -211,6 +245,8 @@ static void refresh_buttons(void)
     EnableWindow(GetDlgItem(g_hmain, IDC_BTN_STOP), busy);
 
     update_srcpath_text();   /* 状态行同步显示当前机型 SRCPATH */
+    update_auto_flags_ui();  /* F2：AUTO_COPY/AUTO_TEST 只读状态框随机型同步 */
+    update_readrule_text();  /* F3：AUTO_TEST=1 时显示 READRULE 判定规则 */
     refresh_run_state();     /* AUTO/MANUAL 随监控开关 / 机型 AUTORUN 统一刷新 */
 
     /* 监控按钮状态与颜色（自绘按钮需重绘） */
@@ -226,20 +262,25 @@ static void refresh_buttons(void)
 static void badge_paint(const wchar_t* txt, COLORREF color, BOOL is_error)
 {
     HWND h = g_herr;
+    if (!h) return;
     SetWindowTextW(h, txt);
-    CHARFORMAT2W cf; memset(&cf, 0, sizeof(cf));
-    cf.cbSize = sizeof(cf); cf.dwMask = CFM_COLOR | CFM_BOLD;
-    cf.dwEffects = CFE_BOLD; cf.crTextColor = color;
-    SendMessageW(h, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
-    wchar_t t[256];
-    GetWindowTextW(g_hmain, t, 200);
+    if (g_riched_ok) {
+        CHARFORMAT2W cf; memset(&cf, 0, sizeof(cf));
+        cf.cbSize = sizeof(cf); cf.dwMask = CFM_COLOR | CFM_BOLD;
+        cf.dwEffects = CFE_BOLD; cf.crTextColor = color;
+        SendMessageW(h, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
+    }
+    /* P2-4：标题可能很长（TITLE+VERSION 各 ≤511），缓冲需足够且始终 NUL */
+    wchar_t t[1200] = L"";
+    GetWindowTextW(g_hmain, t, 1200);
     wchar_t* bang = wcsstr(t, L" [!]");
     if (bang) { *bang = 0; SetWindowTextW(g_hmain, t); }
     if (is_error) {
-        GetWindowTextW(g_hmain, t, 200);
+        GetWindowTextW(g_hmain, t, 1200);
         if (!wcsstr(t, L"[!]")) {
-            wchar_t t2[260];
-            _snwprintf(t2, 260, L"%s [!]", t);
+            wchar_t t2[1220];
+            _snwprintf(t2, 1220, L"%s [!]", t);
+            t2[1219] = 0;
             SetWindowTextW(g_hmain, t2);
         }
     }
@@ -259,11 +300,12 @@ static void set_error_badge(BOOL on, const wchar_t* msg)
     if (on) {
         wchar_t txt[300];
         _snwprintf(txt, 300, L"✕ 出错%s%s", msg && msg[0] ? L"：" : L"", msg ? msg : L"");
+        txt[299] = 0;
         badge_paint(txt, RGB(200, 0, 0), TRUE);
     } else {
         SetWindowTextW(g_herr, L"");
-        wchar_t t[256];
-        GetWindowTextW(g_hmain, t, 200);
+        wchar_t t[1200] = L"";
+        GetWindowTextW(g_hmain, t, 1200);
         wchar_t* bang = wcsstr(t, L" [!]");
         if (bang) { *bang = 0; SetWindowTextW(g_hmain, t); }
     }
@@ -271,7 +313,9 @@ static void set_error_badge(BOOL on, const wchar_t* msg)
 
 static void set_text_color(HWND h, const wchar_t* txt, COLORREF color)
 {
+    if (!h) return;
     SetWindowTextW(h, txt);
+    if (!g_riched_ok) return;   /* STATIC 回退：无富文本能力，仅显示文本 */
     CHARFORMAT2W cf;
     memset(&cf, 0, sizeof(cf));
     cf.cbSize = sizeof(cf);
@@ -279,6 +323,33 @@ static void set_text_color(HWND h, const wchar_t* txt, COLORREF color)
     cf.dwEffects = CFE_BOLD;
     cf.crTextColor = color;
     SendMessageW(h, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
+}
+
+/* P3-1：STATIC 控件文字颜色——记录颜色后触发 WM_CTLCOLORSTATIC 重绘。
+ * （EM_SETCHARFORMAT 对 STATIC 无效；g_hmonfile/g_hmonfile2 用本函数） */
+static void set_static_text(HWND h, const wchar_t* text, COLORREF color)
+{
+    if (!h) return;
+    if (h == g_hmonfile)       g_monfile_col = color;
+    else if (h == g_hmonfile2) g_monfile2_col = color;
+    SetWindowTextW(h, text ? text : L"");
+    InvalidateRect(h, NULL, TRUE);
+}
+
+/* P2-2：进度条与百分比文本的唯一来源（统一 0..100，越界截断）。
+ * 任务开始/结束/停止/拔出以及 WM_APP_PROGRESS 全部只经本函数更新，
+ * ops 侧的字节进度/文件计数/格式化进度都先换算成 0..100 再投递。 */
+static void post_progress_pct(int pct)
+{
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    if (g_hprog) SendMessageW(g_hprog, PBM_SETPOS, (WPARAM)pct, 0);
+    if (g_hprogpct) {
+        wchar_t pt[16];
+        _snwprintf(pt, 16, L"%d%%", pct);
+        pt[15] = 0;
+        SetWindowTextW(g_hprogpct, pt);
+    }
 }
 
 static void set_verdict(const wchar_t* v)
@@ -349,14 +420,74 @@ static void update_srcpath_text(void)
     SetWindowTextW(g_hsrcpath, txt);
 }
 
-/* 监控状态行：标题按颜色显示（停止=红 / 开启=绿 / 命中=黑）+ 副行蓝 */
+/* F2：AUTO_COPY/AUTO_TEST 只读状态框（灰色禁用）——显示当前机型的自动流程配置。
+ * 默认值与 worker 逻辑保持一致（task_thread：AUTO_COPY 默认 1、AUTO_TEST 默认 0）。 */
+static void update_auto_flags_ui(void)
+{
+    if (g_cfg.nmodels <= 0 || g_cur_model < 0 || g_cur_model >= g_cfg.nmodels) return;
+    const CFGMODEL* m = &g_cfg.models[g_cur_model];
+    int autocopy = cfg_get_int(m, L"AUTO_COPY", 1);
+    int autotest = cfg_get_int(m, L"AUTO_TEST", 0);
+    if (g_hchk_autocopy) {
+        SendMessageW(g_hchk_autocopy, BM_SETCHECK,
+                     autocopy ? BST_CHECKED : BST_UNCHECKED, 0);
+        EnableWindow(g_hchk_autocopy, FALSE);   /* 只读状态显示：保持灰色禁用 */
+    }
+    if (g_hchk_autotest) {
+        SendMessageW(g_hchk_autotest, BM_SETCHECK,
+                     autotest ? BST_CHECKED : BST_UNCHECKED, 0);
+        EnableWindow(g_hchk_autotest, FALSE);
+    }
+}
+
+/* F3：READRULE 判定规则标签栏——本机型 AUTO_TEST=1（自动流程会执行读写测试）时显示规则；
+ * AUTO_TEST=0 时置空，避免无关信息干扰。仅 UI 展示，不改变 ops 的判定语义。 */
+static void update_readrule_text(void)
+{
+    if (!g_hreadrule) return;
+    if (g_cfg.nmodels <= 0 || g_cur_model < 0 || g_cur_model >= g_cfg.nmodels) {
+        SetWindowTextW(g_hreadrule, L"");
+        return;
+    }
+    const CFGMODEL* m = &g_cfg.models[g_cur_model];
+    if (cfg_get_int(m, L"AUTO_TEST", 0) == 0) {
+        SetWindowTextW(g_hreadrule, L"");
+        return;
+    }
+    const wchar_t* rule = cfg_get(m, L"READRULE");
+    wchar_t txt[CFG_VAL_LEN + 32];
+    if (rule && rule[0])
+        _snwprintf(txt, CFG_VAL_LEN + 32, L"判定规则：%s", rule);
+    else
+        lstrcpynW(txt, L"判定规则：（未配置 READRULE）", CFG_VAL_LEN + 32);
+    txt[CFG_VAL_LEN + 31] = 0;
+    SetWindowTextW(g_hreadrule, txt);
+}
+
+/* 监控状态行：标题按颜色显示（停止=红 / 开启=绿 / 命中=黑）+ 副行蓝
+ * P3-1：副行 g_hmonfile 是 STATIC，颜色走 set_static_text/WM_CTLCOLORSTATIC。 */
 static void set_monstatus(const wchar_t* title, const wchar_t* sub, COLORREF titlecol)
 {
     set_text_color(g_hmonstatus, title ? title : L"", titlecol);
     if (sub && sub[0])
-        set_text_color(g_hmonfile, sub, RGB(0, 90, 200));
+        set_static_text(g_hmonfile, sub, RGB(0, 90, 200));
     else
-        SetWindowTextW(g_hmonfile, L"");
+        set_static_text(g_hmonfile, L"", RGB(0, 90, 200));
+}
+
+/* P2-1：任务进行中 / 空闲时的监控状态行（任务开始与结束统一使用） */
+static void set_monstatus_task_running(void)
+{
+    set_monstatus(g_monitoring ? L"监控中：任务执行中…" : L"任务执行中…",
+                  L"", RGB(60, 60, 60));
+}
+
+static void set_monstatus_idle(void)
+{
+    if (g_monitoring)
+        set_monstatus(L"监控已开启：等待插入可移动磁盘…", L"", RGB(0, 150, 0));
+    else
+        set_monstatus(L"监控已停止", L"", RGB(200, 0, 0));
 }
 
 /* 插拔计数器：仅在监控开启时计数；显示"计数:0000"4 位循环（9999 后回 0000） */
@@ -368,6 +499,19 @@ static void update_count_text(void)
     SetWindowTextW(g_hcount, ct);
 }
 
+/* P2-8：有界追加（保证 NUL 结尾、绝不越界），用于多盘/长卷标的设备行 */
+static void wbuf_append(wchar_t* buf, size_t cap, size_t* len, const wchar_t* s)
+{
+    if (!buf || cap == 0 || !len || !s) return;
+    if (*len >= cap - 1) { buf[cap - 1] = 0; return; }
+    size_t room = cap - 1 - *len;
+    size_t n = wcslen(s);
+    if (n > room) n = room;   /* 超长时截断但不越界 */
+    memcpy(buf + *len, s, n * sizeof(wchar_t));
+    *len += n;
+    buf[*len] = 0;
+}
+
 static void update_device_text(void)
 {
     if (!g_dev_mask) {
@@ -375,39 +519,78 @@ static void update_device_text(void)
         SetWindowTextW(g_hlabel, L"标签：（无磁盘）");
         return;
     }
-    wchar_t txt[512] = L"设备状态：";
-    wchar_t lbl[512] = L"标签：";
-    BOOL any = FALSE, lab = FALSE;
+    /* 26 盘 × 长卷标（DEVINFO.volume 最多 128 字符）也放得下，且有界追加防溢出 */
+    wchar_t txt[8192], lbl[8192];
+    size_t tl = 0, ll = 0;
+    lstrcpynW(txt, L"设备状态：", 8192);
+    lstrcpynW(lbl, L"标签：", 8192);
+    tl = wcslen(txt);
+    ll = wcslen(lbl);
+    BOOL any = FALSE;
     for (wchar_t d = L'C'; d <= L'Z'; d++) {
         if (g_dev_mask & (1u << (d - L'A'))) {
             DEVINFO di;
-            dev_get_info(d, &di);
+            memset(&di, 0, sizeof(di));
+            /* P2-23：UI 线程只取卷信息（dev_get_info_volume 不跑 SetupAPI），
+             * 避免每次插拔/刷新在界面线程做 USB 父链枚举造成卡顿。
+             * 注意：该 helper 不填 vidpid/usbserial（恒为空），因此本行标签
+             * 只显示卷标；USB VID/SN 仍由任务线程的 dev_capture_sig 采集使用。 */
+            dev_get_info_volume(d, &di);
             wchar_t one[320];
             _snwprintf(one, 320, L"%c: [%s|%.1fGB]  ", d,
                        di.volume[0] ? di.volume : L"无卷标",
                        di.total_bytes / 1073741824.0);
-            lstrcatW(txt, one);
-            /* 标签行附 USB 硬件标识：区分同型号的不同个体 */
-            _snwprintf(one, 320, L"%s%c: ", any ? L"  " : L"", d);
+            one[319] = 0;
+            wbuf_append(txt, 8192, &tl, one);
             if (di.volume[0]) {
-                lstrcatW(lbl, one);
-                lstrcatW(lbl, di.volume);
-                lab = TRUE;
+                if (any) wbuf_append(lbl, 8192, &ll, L"  ");
+                _snwprintf(one, 320, L"%c: %s", d, di.volume);
+                one[319] = 0;
+                wbuf_append(lbl, 8192, &ll, one);
             }
-            if (di.vidpid[0]) {
-                _snwprintf(one, 320, L" [%s", di.vidpid);
-                if (di.usbserial[0]) _snwprintf(one + lstrlenW(one), 320 - lstrlenW(one),
-                                                L" SN:%.16s", di.usbserial);
-                lstrcatW(lbl, one);
-                lstrcatW(lbl, L"]");
-                lab = TRUE;
-            }
+            /* USB 标识（di.vidpid/usbserial）不再在 UI 线程采集；若将来改为
+             * 由设备事件线程缓存后再显示，可在此拼接缓存值。 */
             any = TRUE;
         }
     }
-    if (!lab) lstrcatW(lbl, L"（当前磁盘均无卷标）");
+    if (!any) wbuf_append(lbl, 8192, &ll, L"（当前磁盘均无卷标）");
     SetWindowTextW(g_hdev, txt);
     SetWindowTextW(g_hlabel, lbl);   /* IDC_STC_LABEL 1101 随插拔实时刷新 */
+}
+
+/* P2-1：统一的“任务界面”状态复位。
+ *   new_session=TRUE  ：新盘会话/拔出——清判定、文件双窗格、命中文件行、进度、错误徽标，
+ *                       并恢复绿色“✓ 正常”；保留 CMD-A/CMD-B 日志与插拔计数（batch2 行为）。
+ *   new_session=FALSE ：任务开始前——清旧判定/内容/命中行与错误徽标，进度归零；不清日志。 */
+static void reset_task_ui(BOOL new_session)
+{
+    if (g_hverdict) SetWindowTextW(g_hverdict, L"");
+    if (g_hfile[0])  SetWindowTextW(g_hfile[0], L"");
+    if (g_hfile[1])  SetWindowTextW(g_hfile[1], L"");
+    set_static_text(g_hmonfile, L"", RGB(0, 90, 200));
+    set_static_text(g_hmonfile2, L"", RGB(0, 90, 200));
+    post_progress_pct(0);
+    set_error_badge(FALSE, NULL);
+    if (new_session) set_ok_badge(L"");
+}
+
+/* 主窗口标题：TITLE + 软件版本 + 配置版本（"TITLE（软件 vX.Y.Z）（配置 vA.B.C）"；
+ * 配置版本为空时省略"（配置 v…）"）。
+ * 注意区分：g_cfg.version 是“配置文件版本”（[TOOLSINFO] VERSION，可为空）；
+ *           APP_VERSION_W 是“软件/程序版本”（src/version.h，构建时固定）。
+ * gui_run 初始创建窗口与 reload_config_and_ui 成功后都调用它（L14：标题不刷新）。
+ * P2-4：TITLE/VERSION 各最长 CFG_VAL_LEN-1=511，1200 字符缓冲足够不截断。 */
+void update_main_title(void)
+{
+    if (!g_hmain) return;
+    wchar_t title[1200];
+    if (g_cfg.version[0])
+        _snwprintf(title, 1200, L"%s（软件 v%s）（配置 v%s）",
+                   g_cfg.title, APP_VERSION_W, g_cfg.version);
+    else
+        _snwprintf(title, 1200, L"%s（软件 v%s）", g_cfg.title, APP_VERSION_W);
+    title[1199] = 0;
+    SetWindowTextW(g_hmain, title);
 }
 
 /* ---------- 任务执行 ---------- */
@@ -416,78 +599,190 @@ typedef struct {
     int model_index;
     int trigger;
     wchar_t drive;
+    CFGMODEL model;          /* 启动时按值深拷贝的机型配置（~56KB）：任务线程只读快照，不再引用 g_cfg */
+    wchar_t version[64];     /* 版本号快照（日志用，避免并发读到半新半旧的 g_cfg.version） */
 } TASKARG;
+
+/* 每一步执行前复核目标盘身份（与任务启动时的基线对比）。
+ * 返回 TRUE=一致（或启动时未取到基线，无法判断），FALSE=已变化（任务必须中止）。 */
+static BOOL task_verify_target(wchar_t drv, BOOL have_want, const DEVSIG* want)
+{
+    if (!have_want) return TRUE;
+    DEVSIG cur;
+    BOOL cap = dev_capture_sig(drv, &cur);
+    if (cap && dev_sig_same_device(want, &cur)) return TRUE;
+
+    wchar_t a[320] = L"", b[320] = L"";
+    dev_sig_describe(want, a, 320);
+    if (cap) dev_sig_describe(&cur, b, 320);
+    else     lstrcpynW(b, L"无法读取（盘可能已拔出）", 320);
+    applog(CH_ENGINE, LOG_ERR, L"[GUARD] 目标盘已变化（原 %s / 现 %s），任务中止", a, b);
+    /* 守卫中止不经过 op_* 的 fail()：显式投递错误徽标，避免界面仍显示“正常”。
+     * P2-9：统一用 post_owned_string 投递堆串（失败由 helper 释放，这里只记 WARN）。 */
+    if (g_hmain &&
+        !post_owned_string(g_hmain, WM_APP_ERROR, 1,
+                           L"目标盘已变化，任务中止（详见 CMD-A 日志）"))
+        filelog(LOG_WARN, L"[GUARD] 投递错误徽标失败（主窗口不可用）");
+    return FALSE;
+}
+
+/* 单步结果归类：OP_FAIL→失败标志；OP_STOPPED→停止标志；OP_SKIP_CFG→跳过计数；
+ * 其余（OP_OK）→执行计数。任务聚合不再用 rc |=：配置屏蔽不能淹没“程序自行降级/未实现”。 */
+static void task_account(int r, int* exec, int* skip, BOOL* fail, BOOL* stop)
+{
+    if (r == OP_FAIL) *fail = TRUE;
+    else if (r == OP_STOPPED) *stop = TRUE;
+    else if (r == OP_SKIP_CFG) (*skip)++;
+    else (*exec)++;
+}
 
 static DWORD WINAPI task_thread(LPVOID p)
 {
     TASKARG* a = (TASKARG*)p;
-    CFGMODEL* m = &g_cfg.models[a->model_index];
+    CFGMODEL* m = &a->model;   /* 只读快照：任务运行中 UI 修改/重载配置不影响本任务 */
     wchar_t drv = a->drive;
+
+    /* 任务级身份绑定：启动时采集基线，后续每一步执行前复核 */
+    DEVSIG want;
+    BOOL have_want = dev_capture_sig(drv, &want);
+    if (have_want) {
+        wchar_t ws[320];
+        dev_sig_describe(&want, ws, 320);
+        applog(CH_ENGINE, LOG_INFO, L"[GUARD] 任务绑定目标盘：%s", ws);
+    } else {
+        applog(CH_ENGINE, LOG_WARN,
+               L"[GUARD] 未能采集目标盘 %c: 身份基线，本次仅按盘符复核", drv);
+    }
 
     applog(CH_ENGINE, LOG_UI, L"=== 任务开始：%s（%s，盘 %c:） v%s ===",
            m->display, a->trigger == TRIGGER_AUTO ? L"自动" : L"手动",
-           drv, g_cfg.version);
+           drv, a->version);
 
-    int rc = 0;
+    /* 结果聚合：执行/跳过计数 + fail/stop 标志（不再用 rc |= 合并）。
+     * 配置正常屏蔽（OP_SKIP_CFG）单独计数、不改变成功结论；程序自行降级/未实现（OP_FAIL）必须失败。 */
+    int exec = 0, skip = 0;
+    BOOL fail = FALSE, stop = FALSE, aborted = FALSE;
     BOOL manual = (a->trigger == TRIGGER_MANUAL);
-    rc |= op_usbinfo(m, drv);
 
-    /* 复制：手动触发总是执行；自动触发看 AUTO_COPY（1=自动，0=仅手动点[复制]） */
-    if (!CHECK_STOP()) {
-        if (manual || cfg_get_int(m, L"AUTO_COPY", 1)) {
-            rc |= op_write(m, drv);
+    /* 停止后首步前检查：已停止则不执行任何步骤，最终 OP_STOPPED（绝不报成功） */
+    if (CHECK_STOP()) stop = TRUE;
+
+    /* 步骤 1：USB 信息 */
+    if (!stop && !aborted) {
+        if (CHECK_STOP()) stop = TRUE;
+        else if (!task_verify_target(drv, have_want, &want)) { aborted = TRUE; fail = TRUE; }
+        else task_account(op_usbinfo(m, drv), &exec, &skip, &fail, &stop);
+    }
+
+    /* 步骤 2：复制（手动触发总是执行；自动触发看 AUTO_COPY） */
+    if (!stop && !aborted) {
+        if (CHECK_STOP()) stop = TRUE;
+        else if (!task_verify_target(drv, have_want, &want)) { aborted = TRUE; fail = TRUE; }
+        else if (manual || cfg_get_int(m, L"AUTO_COPY", 1)) {
+            task_account(op_write(m, drv, have_want ? &want : NULL), &exec, &skip, &fail, &stop);
         } else {
+            skip++;   /* 配置裁剪：AUTO_COPY=0 属“按配置正常屏蔽” */
             applog(CH_ENGINE, LOG_INFO,
-                   L"[WRITE] 自动模式且 AUTO_COPY=0，跳过自动复制（可手动点击[复制]）");
+                   L"[WRITE] 自动模式且 AUTO_COPY=0，按配置跳过复制（可手动点击[复制]）");
         }
     }
 
-    /* 读取 + 判定：ENABLE_READ 控制，自动/手动均执行（核心校验） */
-    if (!CHECK_STOP()) rc |= op_read(m, drv);
+    /* 步骤 3：读取 + 判定 */
+    if (!stop && !aborted) {
+        if (CHECK_STOP()) stop = TRUE;
+        else if (!task_verify_target(drv, have_want, &want)) { aborted = TRUE; fail = TRUE; }
+        else task_account(op_read(m, drv), &exec, &skip, &fail, &stop);
+    }
 
-    /* 读写测试：手动触发总是执行；自动触发看 AUTO_TEST（1=自动，0=仅手动点[读写测试]） */
-    if (!CHECK_STOP()) {
-        if (manual || cfg_get_int(m, L"AUTO_TEST", 0)) {
-            rc |= op_rwtest(m, drv);
+    /* 步骤 4：读写测试（手动触发总是执行；自动触发看 AUTO_TEST） */
+    if (!stop && !aborted) {
+        if (CHECK_STOP()) stop = TRUE;
+        else if (!task_verify_target(drv, have_want, &want)) { aborted = TRUE; fail = TRUE; }
+        else if (manual || cfg_get_int(m, L"AUTO_TEST", 0)) {
+            task_account(op_rwtest(m, drv, have_want ? &want : NULL), &exec, &skip, &fail, &stop);
         } else {
+            skip++;   /* 配置裁剪：AUTO_TEST=0 属“按配置正常屏蔽” */
             applog(CH_ENGINE, LOG_INFO,
-                   L"[RWTEST] 自动模式且 AUTO_TEST=0，跳过自动测试（可手动点击[读写测试]）");
+                   L"[RWTEST] 自动模式且 AUTO_TEST=0，按配置跳过自动测试（可手动点击[读写测试]）");
         }
     }
 
-    applog(CH_ENGINE, rc == 0 ? LOG_OK : (rc == 2 ? LOG_WARN : LOG_ERR),
-           L"=== 任务结束（%s） ===", rc == 0 ? L"成功" : rc == 2 ? L"已停止" : L"有错误");
-    PostMessageW(g_hmain, WM_APP_TASKDONE, rc, 0);
+    /* 最终结果：fail→OP_FAIL；否则 stop→OP_STOPPED；否则全部按配置跳过（exec==0&&skip>0）→OP_SKIP_CFG；否则成功 */
+    int final_rc;
+    if (fail) final_rc = OP_FAIL;
+    else if (stop) final_rc = OP_STOPPED;
+    else if (exec == 0 && skip > 0) final_rc = OP_SKIP_CFG;
+    else final_rc = OP_OK;
+
+    LOGLEVEL endlv = final_rc == OP_OK ? LOG_OK :
+                     final_rc == OP_SKIP_CFG ? LOG_INFO :
+                     final_rc == OP_STOPPED ? LOG_WARN : LOG_ERR;
+    const wchar_t* endtxt = final_rc == OP_OK ? L"成功" :
+                            final_rc == OP_SKIP_CFG ? L"按配置跳过（未执行）" :
+                            final_rc == OP_STOPPED ? L"已停止" : L"有错误";
+    applog(CH_ENGINE, endlv, L"=== 任务结束（%s）：执行 %d 步，按配置跳过 %d 步 ===",
+           endtxt, exec, skip);
+    PostMessageW(g_hmain, WM_APP_TASKDONE, (WPARAM)final_rc, 0);
     free(a);
     return 0;
 }
 
-void task_run_async(int model_index, int trigger)
+void task_run_async(int model_index, int trigger, wchar_t drive)
 {
+    if (g_closing) return;
     if (g_running) {
         applog(CH_ENGINE, LOG_WARN, L"任务执行中，忽略新请求");
         return;
     }
-    DWORD mask = 0;
-    dev_enum_removable(&mask, NULL);
-    wchar_t drive = 0;
-    for (wchar_t d = L'C'; d <= L'Z'; d++)
-        if (mask & (1u << (d - L'A'))) { drive = d; break; }
-    if (!drive) {
-        applog(CH_ENGINE, LOG_ERR, L"没有可移动磁盘");
-        PostMessageW(g_hmain, WM_APP_ERROR, 1, (LPARAM)wcs_dup(L"没有可移动磁盘"));
+    if (model_index < 0 || model_index >= g_cfg.nmodels) {
+        applog(CH_ENGINE, LOG_ERR, L"任务启动失败：机型索引 %d 越界（当前共 %d 个机型）",
+               model_index, g_cfg.nmodels);
+        if (!post_owned_string(g_hmain, WM_APP_ERROR, 1,
+                               L"任务启动失败：机型索引无效"))
+            filelog(LOG_WARN, L"[UI] 投递任务启动失败提示失败");
         return;
     }
-    InterlockedExchange(&g_running, 1);
+    if (!drive) {
+        /* 旧逻辑：取第一个可移动盘符 */
+        DWORD mask = 0;
+        dev_enum_removable(&mask, NULL);
+        for (wchar_t d = L'C'; d <= L'Z'; d++)
+            if (mask & (1u << (d - L'A'))) { drive = d; break; }
+    }
+    if (!drive) {
+        applog(CH_ENGINE, LOG_ERR, L"没有可移动磁盘");
+        if (!post_owned_string(g_hmain, WM_APP_ERROR, 1, L"没有可移动磁盘"))
+            filelog(LOG_WARN, L"[UI] 投递“没有可移动磁盘”提示失败");
+        return;
+    }
     TASKARG* a = (TASKARG*)malloc(sizeof(TASKARG));
-    if (!a) return;
+    if (!a) {
+        applog(CH_ENGINE, LOG_ERR, L"内存不足，无法启动任务");
+        return;
+    }
     a->model_index = model_index;
     a->trigger = trigger;
     a->drive = drive;
+    /* P1-3：按值深拷贝机型配置 + 版本号快照（UI 线程内完成拷贝，worker 只读，不再持有 g_cfg 裸指针） */
+    a->model = g_cfg.models[model_index];
+    lstrcpynW(a->version, g_cfg.version, 64);
+    a->version[63] = 0;
+    /* P2-1/P2-2/P2-3：整任务开始——清旧判定/内容、进度归零、错误徽标熄灭，监控状态行显示执行中 */
+    g_single_op = -1;
+    reset_task_ui(FALSE);
+    set_monstatus_task_running();
+    ops_reset_stop();                       /* 任务开始前清零停止标志（含复制取消标志） */
+    InterlockedExchange(&g_running, 1);
+    refresh_buttons();                      /* 立即刷新：[停止]可用、其它按钮禁用 */
     refresh_run_state();   /* 运行模式由监控开关/AUTORUN 决定，不由本次触发方式决定 */
-    HANDLE h = CreateThread(NULL, 0, task_thread, a, 0, NULL);
-    if (h) CloseHandle(h);
-    else { InterlockedExchange(&g_running, 0); free(a); }
+    g_worker = CreateThread(NULL, 0, task_thread, a, 0, NULL);
+    if (!g_worker) {
+        InterlockedExchange(&g_running, 0);
+        ops_reset_stop();
+        free(a);
+        refresh_buttons();
+        applog(CH_ENGINE, LOG_ERR, L"创建任务线程失败");
+    }
 }
 
 /* ---------- 单操作线程 ---------- */
@@ -495,30 +790,65 @@ void task_run_async(int model_index, int trigger)
 enum { OP_FORMAT = 0, OP_LABELREAD = 1, OP_COPY = 2, OP_IDENT = 3,
        OP_READ = 4, OP_RWTEST = 5 };
 
+/* P2-3：单操作显示名（用于“复制完成/格式化完成/…”与停止文案） */
+static const wchar_t* op_display_name(int op)
+{
+    switch (op) {
+    case OP_COPY:      return L"复制";
+    case OP_READ:      return L"读取判定";
+    case OP_FORMAT:    return L"格式化";
+    case OP_LABELREAD: return L"读取标签";
+    case OP_RWTEST:    return L"读写测试";
+    case OP_IDENT:     return L"标识生成";
+    default:           return L"操作";
+    }
+}
+
 typedef struct {
     int op;
     int model_index;
     wchar_t drive;
+    CFGMODEL model;          /* 启动时按值深拷贝的机型配置：操作线程只读快照，不再引用 g_cfg */
+    wchar_t version[64];     /* 版本号快照（日志用） */
 } OPARG;
 
 static DWORD WINAPI op_thread(LPVOID p)
 {
     OPARG* a = (OPARG*)p;
-    CFGMODEL* m = &g_cfg.models[a->model_index];
-    int rc = 0;
-    switch (a->op) {
-    case OP_FORMAT:     rc = op_format(m, a->drive, g_hmain); break;
-    case OP_LABELREAD:  rc = op_label_read(m, a->drive); break;
-    case OP_COPY:
-        rc = op_write(m, a->drive);
-        /* 复制结果徽标：成功绿 Copy Complete! / 失败红 Copy Failure! */
-        PostMessageW(g_hmain, WM_APP_VERDICT,
-                     rc == 0 ? 1 : 2,
-                     (LPARAM)wcs_dup(rc == 0 ? L"Copy Complete!" : L"Copy Failure!"));
-        break;
-    case OP_IDENT:      g_ident_index++; rc = op_gen_ident(m, a->drive, g_ident_index); break;
-    case OP_READ:       rc = op_read(m, a->drive); break;      /* 判定徽标由 op_read 内部设置 */
-    case OP_RWTEST:     rc = op_rwtest(m, a->drive); break;
+    CFGMODEL* m = &a->model;   /* 只读快照：操作运行中 UI 修改/重载配置不影响本次操作 */
+    int rc = OP_OK;
+    /* 停止后首步前检查：已停止则不执行任何操作，TASKDONE wp=OP_STOPPED */
+    if (CHECK_STOP()) {
+        applog(CH_ENGINE, LOG_WARN, L"[UI] 已请求停止，本次操作取消");
+        rc = OP_STOPPED;
+    } else {
+        /* 单操作也做设备身份绑定：进入前采集基线，作为 expect 传给破坏性/读写操作，
+         * 由其做进入/关键点复核（格式化还会在确认后再复核一次） */
+        DEVSIG want;
+        BOOL have_want = dev_capture_sig(a->drive, &want);
+        if (have_want) {
+            wchar_t ws[320];
+            dev_sig_describe(&want, ws, 320);
+            applog(CH_ENGINE, LOG_INFO, L"[GUARD] 单操作绑定目标盘：%s", ws);
+        }
+        switch (a->op) {
+        case OP_FORMAT:     rc = op_format(m, a->drive, g_hmain, have_want ? &want : NULL); break;
+        case OP_LABELREAD:  rc = op_label_read(m, a->drive); break;
+        case OP_COPY:
+            rc = op_write(m, a->drive, have_want ? &want : NULL);
+            /* 复制结果徽标：仅 OP_OK/OP_FAIL 更新；按配置跳过(OP_SKIP_CFG)/已停止(OP_STOPPED)不覆盖。
+             * P2-9：堆串投递统一走 post_owned_string。 */
+            if (rc == OP_OK || rc == OP_FAIL) {
+                if (!post_owned_string(g_hmain, WM_APP_VERDICT,
+                                       (WPARAM)(rc == OP_OK ? 1 : 2),
+                                       rc == OP_OK ? L"Copy Complete!" : L"Copy Failure!"))
+                    filelog(LOG_WARN, L"[UI] 投递复制结果徽标失败");
+            }
+            break;
+        case OP_IDENT:      g_ident_index++; rc = op_gen_ident(m, a->drive, g_ident_index); break;
+        case OP_READ:       rc = op_read(m, a->drive); break;      /* 判定徽标由 op_read 内部设置 */
+        case OP_RWTEST:     rc = op_rwtest(m, a->drive, have_want ? &want : NULL); break;
+        }
     }
     PostMessageW(g_hmain, WM_APP_TASKDONE, rc, 0);
     free(a);
@@ -536,23 +866,82 @@ static wchar_t get_first_drive(void)
 
 static void run_single(int op)
 {
+    if (g_closing) return;
     if (g_running) { applog(CH_ENGINE, LOG_WARN, L"任务执行中，请等待完成或停止"); return; }
+    if (g_cur_model < 0 || g_cur_model >= g_cfg.nmodels) {
+        applog(CH_ENGINE, LOG_ERR, L"操作启动失败：机型索引 %d 越界（当前共 %d 个机型）",
+               g_cur_model, g_cfg.nmodels);
+        if (!post_owned_string(g_hmain, WM_APP_ERROR, 1,
+                               L"操作启动失败：机型索引无效"))
+            filelog(LOG_WARN, L"[UI] 投递操作启动失败提示失败");
+        return;
+    }
     wchar_t drive = get_first_drive();
     if (!drive) {
         applog(CH_ENGINE, LOG_ERR, L"没有可移动磁盘");
-        PostMessageW(g_hmain, WM_APP_ERROR, 1, (LPARAM)wcs_dup(L"没有可移动磁盘"));
+        if (!post_owned_string(g_hmain, WM_APP_ERROR, 1, L"没有可移动磁盘"))
+            filelog(LOG_WARN, L"[UI] 投递“没有可移动磁盘”提示失败");
         return;
     }
-    InterlockedExchange(&g_running, 1);
     OPARG* a = (OPARG*)malloc(sizeof(OPARG));
-    if (!a) { InterlockedExchange(&g_running, 0); return; }
+    if (!a) {
+        applog(CH_ENGINE, LOG_ERR, L"内存不足，无法启动操作");
+        return;
+    }
     a->op = op;
     a->model_index = g_cur_model;
     a->drive = drive;
+    /* P1-3：按值深拷贝机型配置 + 版本号快照（UI 线程内完成拷贝，worker 只读） */
+    a->model = g_cfg.models[g_cur_model];
+    lstrcpynW(a->version, g_cfg.version, 64);
+    a->version[63] = 0;
+    /* P2-1/P2-2/P2-3：单操作开始——记录操作名（完成文案用）、复位旧结果/进度、显示执行中 */
+    g_single_op = op;
+    reset_task_ui(FALSE);
+    set_monstatus_task_running();
+    ops_reset_stop();                       /* 任务开始前清零停止标志（含复制取消标志） */
+    InterlockedExchange(&g_running, 1);
+    refresh_buttons();                      /* 立即刷新：[停止]可用、其它按钮禁用 */
     refresh_run_state();   /* 单操作不改变运行模式：监控开着仍显示 AUTO */
-    HANDLE h = CreateThread(NULL, 0, op_thread, a, 0, NULL);
-    if (h) CloseHandle(h);
-    else { InterlockedExchange(&g_running, 0); free(a); }
+    g_worker = CreateThread(NULL, 0, op_thread, a, 0, NULL);
+    if (!g_worker) {
+        InterlockedExchange(&g_running, 0);
+        ops_reset_stop();
+        g_single_op = -1;   /* 清理单操作标记（无 TASKDONE 可等） */
+        free(a);
+        refresh_buttons();
+        applog(CH_ENGINE, LOG_ERR, L"创建操作线程失败");
+    }
+}
+
+/* 退出时等待工作线程结束：MsgWaitForMultipleObjects + 消息泵（保持界面响应），
+ * 返回 TRUE=工作线程已结束（或本来就没有线程）；FALSE=超时。 */
+static BOOL wait_worker_exit(DWORD timeout_ms)
+{
+    DWORD start = GetTickCount();
+    for (;;) {
+        if (!g_worker) return TRUE;
+        DWORD elapsed = GetTickCount() - start;
+        if (elapsed >= timeout_ms) return FALSE;
+        DWORD r = MsgWaitForMultipleObjects(1, &g_worker, FALSE,
+                                            timeout_ms - elapsed, QS_ALLINPUT);
+        if (r == WAIT_OBJECT_0) return TRUE;
+        if (r == WAIT_OBJECT_0 + 1) {
+            /* 等待期间继续泵消息：让 WM_APP_TASKDONE 完成 join/清理 */
+            MSG msg;
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) {
+                    PostQuitMessage((int)msg.wParam);
+                    continue;
+                }
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        } else {
+            /* WAIT_TIMEOUT / WAIT_FAILED */
+            return FALSE;
+        }
+    }
 }
 
 /* ---------- 布局 ---------- */
@@ -580,12 +969,20 @@ static void layout(void)
         x += opw + dpi_scale(4);
     }
 
-    /* PANE_TOP 第二行：读取标签 + 置顶 + 快捷键使能（按钮与复选框拉开间距） */
+    /* PANE_TOP 第二行：读取标签 + 置顶 + AUTO_COPY/AUTO_TEST 只读状态框 + 快捷键
+     * （F2：两状态框各 150 缩放宽；快捷键占剩余空间，最小约 220 缩放） */
     int y2 = y + rowh + dpi_scale(4);
     MoveWindow(GetDlgItem(g_hmain, IDC_BTN_READLABEL), m, y2, opw, rowh, TRUE);
     int chkx = m + opw + dpi_scale(12);
     MoveWindow(g_hchk_top, chkx, y2, dpi_scale(80), rowh, TRUE);
-    MoveWindow(g_hchk_hotkey, chkx + dpi_scale(80) + dpi_scale(8), y2, dpi_scale(96), rowh, TRUE);
+    chkx += dpi_scale(80) + dpi_scale(8);
+    MoveWindow(g_hchk_autocopy, chkx, y2, dpi_scale(150), rowh, TRUE);
+    chkx += dpi_scale(150) + dpi_scale(8);
+    MoveWindow(g_hchk_autotest, chkx, y2, dpi_scale(150), rowh, TRUE);
+    chkx += dpi_scale(150) + dpi_scale(8);
+    int hotw = W - m - chkx;
+    if (hotw < dpi_scale(220)) hotw = dpi_scale(220);
+    MoveWindow(g_hchk_hotkey, chkx, y2, hotw, rowh, TRUE);
 
     y = y2 + rowh + dpi_scale(6);
     /* PANE_LABEL 标签行 */
@@ -599,7 +996,10 @@ static void layout(void)
     MoveWindow(g_hsrcpath, m + modew + dpi_scale(8), y + dpi_scale(4),
                W - 2 * m - modew - cntw - dpi_scale(16), rowh, TRUE);
     MoveWindow(g_hcount, W - m - cntw, y + dpi_scale(4), cntw, rowh, TRUE);
-    y += rowh + dpi_scale(12);   /* 设备状态行及以下整体下移，与状态行拉开间距 */
+    y += rowh + dpi_scale(2);
+    /* F3：READRULE 判定规则标签栏：状态行后整宽一行；其余行随之下移 */
+    MoveWindow(g_hreadrule, m, y, W - 2 * m, rowh, TRUE);
+    y += rowh + dpi_scale(10);
 
     /* 设备状态 + 出错徽标 */
     int devw = (W - 2 * m) * 2 / 3;
@@ -658,460 +1058,91 @@ static void layout(void)
     MoveWindow(g_hmonbtn[2], bx + (bw + gap) * 2, y, bw, rowh, TRUE);
 }
 
-/* ============================================================
- * 配置窗口
- * ============================================================ */
 
-static BOOL g_cfg_unlocked = FALSE;
-static HWND g_hcfg = NULL, g_hcfglist = NULL, g_hcfgtext = NULL, g_hcfgpass = NULL,
-            g_hcfgstate = NULL, g_hcfgkey = NULL, g_hcfgval = NULL,
-            g_hcfgvalcombo = NULL, g_hcfghint = NULL, g_hcfgvallbl = NULL;
-static int g_cfg_failcount = 0;
-
-/* 键的简要说明（配置窗口提示行） */
-static const wchar_t* key_hint(const wchar_t* key)
+/* 从磁盘重载配置并刷新主界面（机型下拉/按钮状态/主标题/配置窗口列表）。
+ * CONFIG 约 906KB：必须堆分配，禁止在栈上放 CONFIG（P1-15 栈溢出风险）。 */
+BOOL reload_config_and_ui(void)
 {
-    static const struct { const wchar_t* k; const wchar_t* h; } tbl[] = {
-        { L"ENABLE_READ",     L"读取开关：1=允许读取（读取校验按钮可用、自动流程执行判定）；0=禁用并置灰" },
-        { L"ENABLE_WRITE",    L"写入开关：1=允许复制文件（复制按钮可用）；0=禁用并置灰" },
-        { L"ENABLE_FORMAT",   L"格式化开关：1=格式化按钮可用；0=禁用并置灰（自动流程永不格式化）" },
-        { L"ENABLE_USBINFO",  L"USB 识别开关：1=识别 USB2.0/3.x 通讯模式并输出到 CMD-A；0=跳过" },
-        { L"AUTO_COPY",       L"自动复制：1=插盘自动流程内复制（需 AUTORUN=1 或开启监控）；0=只手动点[复制]" },
-        { L"AUTO_TEST",       L"自动测试：1=插盘自动流程内执行读写测试；0=只手动点[读写测试]" },
-        { L"AUTORUN",         L"插盘自动执行：1=插入U盘立即执行整任务；0=需先点[开始监控]" },
-        { L"WRITEMODE",       L"写入方式：COPY=简单复制（推荐）；PROCESSED=按台生成不同文件（后续版本）" },
-        { L"SRCPATH",         L"复制源：绝对路径或相对路径（相对=exe 同目录），支持 * 与 ? 通配符" },
-        { L"DSTPATH",         L"U盘内目标目录：目录不存在时自动逐级建立；\\ 表示U盘根目录" },
-        { L"READFILE",        L"读取文件：支持子目录与通配符，如 SYSTEM\\PAW6K-LSN、8685????.txt、SYSTEM\\*.txt；留空=跳过读取" },
-        { L"MATCH_POLICY",    L"多命中取舍：NEWEST=取最新 / FIRST=第一个 / STRICT=多命中判失败并列出" },
-        { L"READPATTERN",     L"匹配方式：WILDCARD=通配符（推荐）；REGEX=正则（后续版本支持）" },
-        { L"READRULE",        L"判定规则（分号分隔）：MUST_CONTAIN:关键字 ; MIN_LEN:最小长度；PASS 才显示内容" },
-        { L"CONFIRM",         L"格式化确认：1=格式化前弹窗二次确认（建议保持 1）" },
-        { L"FILESYSTEM",      L"格式化文件系统：FAT32（≤32GB/单文件≤4GB）或 EXFAT（大容量推荐）" },
-        { L"VOLUME",          L"卷标：仅格式化完成后写入；留空=不改卷标（FAT32 卷标最长 11 字符）" },
-        { L"HASH",            L"复制校验算法：md5（复制前后比对，不一致判失败）" },
-        { L"ADMINPASS",       L"配置解锁密码（明文存放，仅用于防误改；留空=禁止解锁编辑）" },
-        { L"PRJNUM",          L"机型编号：程序内部映射用，改动会导致配置识别不到该机型" },
-        { L"TITLE",           L"主窗口标题文字（仅影响显示，不影响功能）" },
-        { L"VERSION",         L"配置版本标记（仅作记录，不参与程序逻辑）" },
-    };
-    for (size_t i = 0; i < sizeof(tbl) / sizeof(tbl[0]); i++)
-        if (_wcsicmp(key, tbl[i].k) == 0) return tbl[i].h;
-    if (_wcsnicmp(key, L"BTN_", 4) == 0)
-        return L"按钮显示名：仅修改界面文字（如“写入标签”→复制、升级），不影响功能与日志";
-    return L"（该键暂无说明，请参考 docs/配置文件使用手册.md）";
-}
-
-/* ---------- 配置项控件类型判定：枚举键用下拉框，其余用输入框 ---------- */
-
-static void cfg_apply_lock(void);   /* 前向声明 */
-
-/* 返回该键的可选值列表数量（0=自由输入） */
-static int key_enum_values(const wchar_t* key, const wchar_t** vals, int max)
-{
-    static const wchar_t* yn[]   = { L"0", L"1" };
-    static const wchar_t* wmode[] = { L"COPY", L"PROCESSED" };
-    static const wchar_t* policy[] = { L"NEWEST", L"FIRST", L"STRICT" };
-    static const wchar_t* pattern[] = { L"WILDCARD", L"REGEX" };
-    static const wchar_t* fs[]   = { L"FAT32", L"EXFAT" };
-    static const wchar_t* hashv[] = { L"md5" };
-
-    const wchar_t** src = NULL;
-    int n = 0;
-    if (_wcsnicmp(key, L"ENABLE_", 7) == 0 ||
-        _wcsicmp(key, L"CONFIRM") == 0 ||
-        _wcsicmp(key, L"AUTORUN") == 0 ||
-        _wcsicmp(key, L"AUTO_COPY") == 0 ||
-        _wcsicmp(key, L"AUTO_TEST") == 0) {
-        src = yn; n = 2;
-    } else if (_wcsicmp(key, L"WRITEMODE") == 0) {
-        src = wmode; n = 2;
-    } else if (_wcsicmp(key, L"MATCH_POLICY") == 0) {
-        src = policy; n = 3;
-    } else if (_wcsicmp(key, L"READPATTERN") == 0) {
-        src = pattern; n = 2;
-    } else if (_wcsicmp(key, L"FILESYSTEM") == 0) {
-        src = fs; n = 2;
-    } else if (_wcsicmp(key, L"HASH") == 0) {
-        src = hashv; n = 1;
+    /* 记录重载前的选择（主窗口当前机型、配置窗口当前机型），重载后尽量保持 */
+    wchar_t cur_internal[CFG_KEY_LEN] = L"";
+    if (g_cur_model >= 0 && g_cur_model < g_cfg.nmodels)
+        lstrcpynW(cur_internal, g_cfg.models[g_cur_model].internal, CFG_KEY_LEN);
+    wchar_t cfg_keep[CFG_KEY_LEN] = L"";
+    if (g_hcfglist && IsWindow(g_hcfglist)) {
+        int sel = (int)SendMessageW(g_hcfglist, LB_GETCURSEL, 0, 0);
+        if (sel >= 0 && sel < g_cfg.nmodels)
+            lstrcpynW(cfg_keep, g_cfg.models[sel].internal, CFG_KEY_LEN);
     }
-    if (!src) return 0;
-    if (n > max) n = max;
-    for (int i = 0; i < n; i++) vals[i] = src[i];
-    return n;
-}
 
-/* 按当前键切换"新值"控件：枚举→下拉；普通（SRCPATH/DSTPATH/READFILE 等）→输入框
- * from_list=TRUE 表示键名来自下拉列表选中（此时编辑框文本可能尚未刷新，
- * 必须用 CB_GETCURSEL/CB_GETLBTEXT 取列表项，否则拿到旧键名导致控件类型不切换）；
- * fill_value=TRUE 时把配置里的当前值回填到值控件 */
-static void cfg_sync_value_editor_ex(BOOL from_list, BOOL fill_value)
-{
-    wchar_t key[CFG_KEY_LEN];
-    if (from_list) {
-        int ki = (int)SendMessageW(g_hcfgkey, CB_GETCURSEL, 0, 0);
-        if (ki >= 0 &&
-            SendMessageW(g_hcfgkey, CB_GETLBTEXT, ki, (LPARAM)key) != CB_ERR) {
-            /* 键名取自列表项（新选中的键） */
-        } else {
-            GetWindowTextW(g_hcfgkey, key, CFG_KEY_LEN);
-        }
-    } else {
-        GetWindowTextW(g_hcfgkey, key, CFG_KEY_LEN);   /* 手输键名（CBS_DROPDOWN） */
+    CONFIG* newcfg = (CONFIG*)malloc(sizeof(CONFIG));
+    if (!newcfg) {
+        applog(CH_ENGINE, LOG_ERR, L"[CFG] 重载配置失败：内存不足（需 %u 字节）",
+               (unsigned)sizeof(CONFIG));
+        return FALSE;
     }
-    if (!key[0]) return;
-    int mi = (int)SendMessageW(g_hcfglist, LB_GETCURSEL, 0, 0);
-    if (mi < 0 || mi >= g_cfg.nmodels) return;
-
-    SetWindowTextW(g_hcfghint, key_hint(key));   /* 键值说明提示（后文按锁定状态补充） */
-    CFGMODEL* m = &g_cfg.models[mi];
-    const wchar_t* cur = cfg_get(m, key);
-    if (!cur) cur = L"";
-
-    const wchar_t* vals[4];
-    int n = key_enum_values(key, vals, 4);
-    if (n > 0) {
-        SetWindowTextW(g_hcfgvallbl, L"新值（下拉选择）：");
-        ShowWindow(g_hcfgvalcombo, SW_SHOW);
-        ShowWindow(g_hcfgval, SW_HIDE);
-        SendMessageW(g_hcfgvalcombo, CB_RESETCONTENT, 0, 0);
-        int pick = 0;
-        for (int i = 0; i < n; i++) {
-            SendMessageW(g_hcfgvalcombo, CB_ADDSTRING, 0, (LPARAM)vals[i]);
-            if (_wcsicmp(vals[i], cur) == 0) pick = i;
-        }
-        SendMessageW(g_hcfgvalcombo, CB_SETCURSEL, pick, 0);
-    } else {
-        /* 自由键（SRCPATH/DSTPATH/READFILE/READRULE/VOLUME/BTN_* 等）→ 输入框，
-         * 无论锁定与否都回填当前值（锁定时灰显可看不可改），
-         * 并顺带清掉上个枚举键可能残留在输入框里的旧值 */
-        SetWindowTextW(g_hcfgvallbl, L"新值（输入）：");
-        ShowWindow(g_hcfgvalcombo, SW_HIDE);
-        ShowWindow(g_hcfgval, SW_SHOW);
-        if (fill_value) SetWindowTextW(g_hcfgval, cur);
+    if (!cfg_load(g_ini_path, newcfg)) {
+        applog(CH_ENGINE, LOG_ERR, L"[CFG] 重载配置失败：ini 无法解析（%s）", g_ini_path);
+        free(newcfg);
+        return FALSE;
     }
-    /* 说明行：未解锁时明示输入框为只读及解锁方法 */
-    const wchar_t* h = key_hint(key);
-    if (g_cfg_unlocked) {
-        SetWindowTextW(g_hcfghint, h);
-    } else {
-        wchar_t hintbuf[512];
-        _snwprintf(hintbuf, 512,
-                   L"%s　——　锁定中：新值框灰色只读，点[解锁编辑]输入密码后可修改", h);
-        SetWindowTextW(g_hcfghint, hintbuf);
-    }
-    cfg_apply_lock();
-}
+    g_cfg = *newcfg;
+    free(newcfg);
 
-static void cfg_sync_value_editor(void)
-{
-    cfg_sync_value_editor_ex(TRUE, TRUE);
-}
-
-static void cfg_show_model(void)
-{
-    int sel = (int)SendMessageW(g_hcfglist, LB_GETCURSEL, 0, 0);
-    if (sel < 0 || sel >= g_cfg.nmodels) return;
-    CFGMODEL* m = &g_cfg.models[sel];
-    wchar_t* buf = (wchar_t*)malloc(65536 * sizeof(wchar_t));
-    if (!buf) return;
-    buf[0] = 0;
-    wchar_t head[256];
-    _snwprintf(head, 256, L"机型：%s（内部键 %s）\r\n\r\n---- 配置键值（只读展示）----\r\n",
-               m->display, m->internal);
-    lstrcatW(buf, head);
-    for (int i = 0; i < m->nkeys; i++) {
-        wchar_t line[CFG_KEY_LEN + CFG_VAL_LEN + 8];
-        _snwprintf(line, CFG_KEY_LEN + CFG_VAL_LEN + 8, L"%s=%s\r\n",
-                   m->keys[i].key, m->keys[i].val);
-        lstrcatW(buf, line);
-    }
-    SetWindowTextW(g_hcfgtext, buf);
-    SendMessageW(g_hcfgtext, EM_SETREADONLY, TRUE, 0);
-    free(buf);
-
-    /* 键名下拉：列出本机型全部键 */
-    SendMessageW(g_hcfgkey, CB_RESETCONTENT, 0, 0);
-    for (int i = 0; i < m->nkeys; i++)
-        SendMessageW(g_hcfgkey, CB_ADDSTRING, 0, (LPARAM)m->keys[i].key);
-    if (m->nkeys > 0) SendMessageW(g_hcfgkey, CB_SETCURSEL, 0, 0);
-    cfg_sync_value_editor();
-}
-
-static void cfg_apply_lock(void)
-{
-    EnableWindow(g_hcfgkey, g_cfg_unlocked);
-    EnableWindow(g_hcfgval, g_cfg_unlocked);
-    EnableWindow(g_hcfgvalcombo, g_cfg_unlocked && IsWindowVisible(g_hcfgvalcombo));
-    SetWindowTextW(g_hcfgstate, g_cfg_unlocked ? L"状态：已解锁（可编辑保存）" : L"状态：只读（未授权）");
-}
-
-/* 从磁盘重载配置并刷新主界面（机型下拉/按钮状态） */
-static BOOL reload_config_and_ui(void)
-{
-    wchar_t cur_internal[CFG_KEY_LEN];
-    lstrcpynW(cur_internal, g_cfg.models[g_cur_model].internal, CFG_KEY_LEN);
-    CONFIG newcfg;
-    if (!cfg_load(g_ini_path, &newcfg)) return FALSE;
-    g_cfg = newcfg;
     int newsel = 0;
     SendMessageW(g_hmodel, CB_RESETCONTENT, 0, 0);
     for (int i = 0; i < g_cfg.nmodels; i++) {
         SendMessageW(g_hmodel, CB_ADDSTRING, 0, (LPARAM)g_cfg.models[i].display);
-        if (_wcsicmp(g_cfg.models[i].internal, cur_internal) == 0) newsel = i;
+        if (cur_internal[0] && _wcsicmp(g_cfg.models[i].internal, cur_internal) == 0)
+            newsel = i;
     }
     g_cur_model = newsel;
     SendMessageW(g_hmodel, CB_SETCURSEL, newsel, 0);
+
+    update_main_title();               /* L14：TITLE/VERSION 变化后刷新主标题 */
+    /* TOPMOST 键可能已随保存/机型切换变化：同步复选框与置顶状态 */
+    SendMessageW(g_hchk_top, BM_SETCHECK,
+                 g_cfg.topmost ? BST_CHECKED : BST_UNCHECKED, 0);
+    if (g_hmain)
+        SetWindowPos(g_hmain, g_cfg.topmost ? HWND_TOPMOST : HWND_NOTOPMOST,
+                     0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    cfg_rebuild_model_list(cfg_keep);  /* L14：配置窗口标题/机型列表/内容刷新（窗口打开时） */
     refresh_buttons();
     return TRUE;
 }
 
-/* 用内嵌出厂默认配置覆盖 ini */
-static BOOL write_default_ini(void)
+
+/* P1-17：全局热键 Ctrl+Alt+T=读写测试 / Ctrl+Alt+C=复制（单操作，不是整任务）。
+ * 使用 MOD_CONTROL|MOD_ALT 避免劫持裸 T/C；任一注册失败回滚并返回 FALSE（不宣称成功）。 */
+static BOOL hotkeys_enable(HWND h, BOOL on)
 {
-    HANDLE h = CreateFileW(g_ini_path, GENERIC_WRITE, 0, NULL,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) return FALSE;
-    DWORD w = 0;
-    static const char bom[3] = { (char)0xEF, (char)0xBB, (char)0xBF };
-    WriteFile(h, bom, 3, &w, NULL);
-    WriteFile(h, DEFAULT_INI_UTF8, (DWORD)strlen(DEFAULT_INI_UTF8), &w, NULL);
-    CloseHandle(h);
-    return TRUE;
-}
-
-static void cfg_create_controls(HWND h)
-{
-    int m = dpi_scale(10), rowh = dpi_scale(24), y = m;
-    HFONT f = g_font;
-
-    #define CFGSTC(id, txt, x2, y2, w2, h2) do { \
-        HWND hs = CreateWindowExW(0, L"STATIC", txt, WS_CHILD | WS_VISIBLE | SS_LEFT, \
-                                  x2, y2, w2, h2, h, (HMENU)(INT_PTR)(id), g_hinst, NULL); \
-        SendMessageW(hs, WM_SETFONT, (WPARAM)f, TRUE); } while (0)
-    #define CFGLIST(id, x2, y2, w2, h2, style) do { \
-        HWND hc = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", NULL, \
-                    WS_CHILD | WS_VISIBLE | WS_VSCROLL | (style), x2, y2, w2, h2, \
-                    h, (HMENU)(INT_PTR)(id), g_hinst, NULL); \
-        SendMessageW(hc, WM_SETFONT, (WPARAM)f, TRUE); } while (0)
-    #define CFGEDIT(id, x2, y2, w2, h2, style) do { \
-        HWND hc = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", NULL, \
-                    WS_CHILD | WS_VISIBLE | (style), x2, y2, w2, h2, \
-                    h, (HMENU)(INT_PTR)(id), g_hinst, NULL); \
-        SendMessageW(hc, WM_SETFONT, (WPARAM)f, TRUE); } while (0)
-    #define CFGCOMBO(id, x2, y2, w2, h2, style) do { \
-        HWND hc = CreateWindowExW(0, L"COMBOBOX", NULL, \
-                    WS_CHILD | WS_VISIBLE | WS_VSCROLL | (style), \
-                    x2, y2, w2, h2, h, (HMENU)(INT_PTR)(id), g_hinst, NULL); \
-        SendMessageW(hc, WM_SETFONT, (WPARAM)f, TRUE); } while (0)
-    #define CFGBTN(id, txt, x2, y2, w2, h2) do { \
-        HWND hc = CreateWindowExW(0, L"BUTTON", txt, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, \
-                                  x2, y2, w2, h2, h, (HMENU)(INT_PTR)(id), g_hinst, NULL); \
-        SendMessageW(hc, WM_SETFONT, (WPARAM)f, TRUE); } while (0)
-
-    CFGSTC(0, L"机型：", m, y + dpi_scale(4), dpi_scale(50), rowh);
-    CFGLIST(IDC_CFG_LIST_MODELS, m + dpi_scale(50), y, dpi_scale(240), rowh * 4,
-            LBS_NOTIFY | LBS_NOINTEGRALHEIGHT);
-    y += rowh * 4 + dpi_scale(8);
-
-    CFGSTC(0, L"键（选择）：", m, y + dpi_scale(4), dpi_scale(160), rowh);
-    CFGCOMBO(IDC_CFG_COMBO_KEY, m + dpi_scale(165), y, dpi_scale(320),
-             rowh + dpi_scale(150), CBS_DROPDOWN);   /* 可输入：允许键入列表外的新键名 */
-    y += rowh + dpi_scale(4);
-    CFGSTC(IDC_STC_CFGVALLBL, L"新值（下拉选择）：", m, y + dpi_scale(4), dpi_scale(160), rowh);
-    CFGEDIT(IDC_EDIT_CFGVAL, m + dpi_scale(165), y, dpi_scale(320), rowh, ES_AUTOHSCROLL);
-    CFGCOMBO(IDC_CFG_COMBO_VAL, m + dpi_scale(165), y, dpi_scale(320),
-             rowh + dpi_scale(150), CBS_DROPDOWNLIST);
-    y += rowh + dpi_scale(4);
-
-    /* 键值说明提示（选中键后自动显示） */
-    CFGSTC(0, L"说明：", m, y + dpi_scale(4), dpi_scale(50), rowh);
-    CFGSTC(IDC_STC_CFGHINT, L"", m + dpi_scale(52), y, dpi_scale(448), rowh * 2);
-    y += rowh * 2 + dpi_scale(6);
-
-    /* 按钮行：解锁编辑 + 密码框（点击解锁后才显示） + 保存 + 恢复默认 */
-    CFGBTN(IDC_BTN_UNLOCK, L"解锁编辑", m, y, dpi_scale(90), rowh);
-    CFGEDIT(IDC_CFG_EDIT_PASS, m + dpi_scale(100), y, dpi_scale(140), rowh,
-            ES_PASSWORD | ES_AUTOHSCROLL);          /* 初始隐藏，点解锁后显示 */
-    CFGBTN(IDC_BTN_SAVECFG, L"保存修改", m + dpi_scale(250), y, dpi_scale(90), rowh);
-    CFGBTN(IDC_BTN_RESETCFG, L"恢复默认设置", m + dpi_scale(350), y, dpi_scale(110), rowh);
-    y += rowh + dpi_scale(4);
-    CFGSTC(IDC_STC_CFGSTATE, L"状态：只读（未授权）", m, y, dpi_scale(320), rowh);
-    CFGBTN(IDC_BTN_CLOSECFG, L"关闭", m + dpi_scale(440), y, dpi_scale(60), rowh);
-    y += rowh + dpi_scale(8);
-
-    CFGSTC(0, L"配置内容：", m, y, dpi_scale(120), rowh);
-    y += rowh;
-    CFGEDIT(IDC_EDIT_CFGTEXT, m, y, dpi_scale(500), dpi_scale(250),
-            ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY);
-    #undef CFGSTC
-    #undef CFGLIST
-    #undef CFGEDIT
-    #undef CFGCOMBO
-    #undef CFGBTN
-}
-
-static LRESULT CALLBACK cfg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
-{
-    switch (msg) {
-    case WM_CREATE:
-        g_hcfg = h;
-        cfg_create_controls(h);
-        g_hcfglist = GetDlgItem(h, IDC_CFG_LIST_MODELS);
-        g_hcfgtext = GetDlgItem(h, IDC_EDIT_CFGTEXT);
-        g_hcfgpass = GetDlgItem(h, IDC_CFG_EDIT_PASS);
-        g_hcfgstate = GetDlgItem(h, IDC_STC_CFGSTATE);
-        g_hcfgkey = GetDlgItem(h, IDC_CFG_COMBO_KEY);
-        g_hcfgval = GetDlgItem(h, IDC_EDIT_CFGVAL);
-        g_hcfgvalcombo = GetDlgItem(h, IDC_CFG_COMBO_VAL);
-        g_hcfghint = GetDlgItem(h, IDC_STC_CFGHINT);
-        g_hcfgvallbl = GetDlgItem(h, IDC_STC_CFGVALLBL);
-        for (int i = 0; i < g_cfg.nmodels; i++)
-            SendMessageW(g_hcfglist, LB_ADDSTRING, 0, (LPARAM)g_cfg.models[i].display);
-        SendMessageW(g_hcfglist, LB_SETCURSEL, 0, 0);
-        cfg_show_model();
-        cfg_apply_lock();
-        /* 密码输入框：平时隐藏且禁用，点击"解锁编辑"后才显示 */
-        ShowWindow(g_hcfgpass, SW_HIDE);
-        EnableWindow(g_hcfgpass, FALSE);
-        return 0;
-
-    case WM_COMMAND:
-        switch (LOWORD(wp)) {
-        case IDC_CFG_LIST_MODELS:
-            if (HIWORD(wp) == LBN_SELCHANGE) cfg_show_model();
-            break;
-        case IDC_CFG_COMBO_KEY:
-            if (HIWORD(wp) == CBN_SELCHANGE)
-                cfg_sync_value_editor_ex(TRUE, TRUE);   /* 列表选择：以列表项键名为准，回填当前值 */
-            else if (HIWORD(wp) == CBN_EDITCHANGE)
-                cfg_sync_value_editor_ex(FALSE, TRUE);  /* 手输键名：以编辑框文本为准 */
-            break;
-        case IDC_BTN_UNLOCK: {
-            /* 两步式：第一次点击显示密码框；输入密码后再次点击校验 */
-            if (!IsWindowVisible(g_hcfgpass)) {
-                if (!g_cfg.adminpass[0]) {
-                    MessageBoxW(h, L"ini 未设置管理员密码（ADMINPASS），暂不支持解锁编辑。",
-                                L"提示", MB_OK | MB_ICONINFORMATION);
-                    break;
-                }
-                ShowWindow(g_hcfgpass, SW_SHOW);
-                EnableWindow(g_hcfgpass, TRUE);
-                SetWindowTextW(g_hcfgpass, L"");
-                SetFocus(g_hcfgpass);
-                SetWindowTextW(GetDlgItem(h, IDC_BTN_UNLOCK), L"确认解锁");
-                break;
-            }
-            wchar_t pass[CFG_VAL_LEN];
-            GetWindowTextW(g_hcfgpass, pass, CFG_VAL_LEN);
-            if (wcscmp(pass, g_cfg.adminpass) == 0) {
-                g_cfg_unlocked = TRUE;
-                g_cfg_failcount = 0;
-                cfg_apply_lock();
-                /* 恢复密码框隐藏 */
-                ShowWindow(g_hcfgpass, SW_HIDE);
-                EnableWindow(g_hcfgpass, FALSE);
-                SetWindowTextW(GetDlgItem(h, IDC_BTN_UNLOCK), L"解锁编辑");
-                applog(CH_ENGINE, LOG_UI, L"[CFG] 配置窗口已解锁编辑");
-            } else {
-                g_cfg_failcount++;
-                wchar_t msgb[128];
-                _snwprintf(msgb, 128, L"密码错误（第 %d 次，连续 3 次锁定）", g_cfg_failcount);
-                MessageBoxW(h, msgb, L"解锁失败", MB_OK | MB_ICONWARNING);
-                if (g_cfg_failcount >= 3) {
-                    ShowWindow(g_hcfgpass, SW_HIDE);
-                    EnableWindow(g_hcfgpass, FALSE);
-                    EnableWindow(GetDlgItem(h, IDC_BTN_UNLOCK), FALSE);
-                    SetWindowTextW(GetDlgItem(h, IDC_BTN_UNLOCK), L"解锁编辑");
-                    MessageBoxW(h, L"连续 3 次密码错误，密码输入已锁定。", L"锁定",
-                                MB_OK | MB_ICONSTOP);
-                }
-            }
-            break;
-        }
-        case IDC_BTN_SAVECFG: {
-            if (!g_cfg_unlocked) {
-                MessageBoxW(h, L"只读模式下不可修改配置。请先解锁。", L"提示",
-                            MB_OK | MB_ICONINFORMATION);
-                break;
-            }
-            wchar_t key[CFG_KEY_LEN] = L"", val[CFG_VAL_LEN] = L"";
-            GetWindowTextW(g_hcfgkey, key, CFG_KEY_LEN);   /* 兼容手输的新键名 */
-            if (!key[0]) {
-                MessageBoxW(h, L"请选择要修改的键。", L"提示", MB_OK);
-                break;
-            }
-            if (IsWindowVisible(g_hcfgvalcombo))
-                GetWindowTextW(g_hcfgvalcombo, val, CFG_VAL_LEN);
-            else
-                GetWindowTextW(g_hcfgval, val, CFG_VAL_LEN);
-            int sel = (int)SendMessageW(g_hcfglist, LB_GETCURSEL, 0, 0);
-            if (sel < 0) break;
-            wchar_t section[CFG_KEY_LEN];
-            lstrcpynW(section, g_cfg.models[sel].internal, CFG_KEY_LEN);
-            if (cfg_save_key(g_ini_path, section, key, val)) {
-                /* 保存后立即重载配置并刷新主界面 */
-                reload_config_and_ui();
-                cfg_show_model();
-                applog(CH_ENGINE, LOG_OK, L"[CFG] 已保存 %s.%s=%s（配置已重载）",
-                       section, key, val);
-            } else {
-                MessageBoxW(h, L"保存失败（ini 写入错误）。", L"错误", MB_OK | MB_ICONERROR);
-            }
-            break;
-        }
-        case IDC_BTN_RESETCFG: {
-            if (MessageBoxW(h,
-                    L"确认恢复默认设置？\n\n当前 UdiskTools.ini 将被出厂默认配置覆盖，\n自定义的机型与路径修改会丢失！",
-                    L"恢复默认设置", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK)
-                break;
-            if (write_default_ini() && reload_config_and_ui()) {
-                g_cfg_unlocked = FALSE;
-                cfg_apply_lock();
-                /* 刷新机型列表与内容展示 */
-                SendMessageW(g_hcfglist, LB_RESETCONTENT, 0, 0);
-                for (int i = 0; i < g_cfg.nmodels; i++)
-                    SendMessageW(g_hcfglist, LB_ADDSTRING, 0, (LPARAM)g_cfg.models[i].display);
-                SendMessageW(g_hcfglist, LB_SETCURSEL, 0, 0);
-                cfg_show_model();
-                applog(CH_ENGINE, LOG_UI, L"[CFG] 已恢复默认设置（内嵌出厂配置覆盖并重载）");
-                MessageBoxW(h, L"已恢复默认设置并立即重载。", L"提示", MB_OK | MB_ICONINFORMATION);
-            } else {
-                MessageBoxW(h, L"恢复默认设置失败（ini 写入错误）。", L"错误", MB_OK | MB_ICONERROR);
-            }
-            break;
-        }
-        case IDC_BTN_CLOSECFG:
-            /* 保存/修改后关闭时也确保配置已重载 */
-            reload_config_and_ui();
-            DestroyWindow(h);
-            break;
-        }
-        break;
-
-    case WM_CLOSE:
-        /* 关闭配置窗口时重载配置（覆盖外部修改并刷新主界面） */
-        reload_config_and_ui();
-        DestroyWindow(h);
-        return 0;
-    case WM_NCDESTROY:
-        g_hcfg = NULL;
-        break;
+    if (!on) {
+        UnregisterHotKey(h, ID_HOTKEY_T);
+        UnregisterHotKey(h, ID_HOTKEY_C);
+        g_hotkey_enabled = FALSE;
+        if (g_hmain)
+            applog(CH_ENGINE, LOG_UI, L"[UI] 快捷键已注销（Ctrl+Alt+T/C）");
+        return TRUE;
     }
-    return DefWindowProcW(h, msg, wp, lp);
-}
+    if (g_hotkey_enabled) return TRUE;
 
-static void open_config_dialog(void)
-{
-    if (g_hcfg && IsWindow(g_hcfg)) { SetForegroundWindow(g_hcfg); return; }
-    g_cfg_unlocked = FALSE;
-    g_cfg_failcount = 0;
-    int w = dpi_scale(540), hgt = dpi_scale(620);
-    CreateWindowExW(WS_EX_DLGMODALFRAME, L"UDK_CFGCLASS",
-                    L"配置（只读，解锁后可编辑）",
-                    (WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX) | WS_VISIBLE,
-                    CW_USEDEFAULT, CW_USEDEFAULT, w, hgt,
-                    g_hmain, NULL, g_hinst, NULL);
+    BOOL ok_t = RegisterHotKey(h, ID_HOTKEY_T, MOD_CONTROL | MOD_ALT, 'T');
+    DWORD err_t = ok_t ? 0 : GetLastError();
+    BOOL ok_c = RegisterHotKey(h, ID_HOTKEY_C, MOD_CONTROL | MOD_ALT, 'C');
+    DWORD err_c = ok_c ? 0 : GetLastError();
+    if (!ok_t || !ok_c) {
+        /* 部分成功也回滚，避免“勾选了却只注册一半”的误报 */
+        if (ok_t) UnregisterHotKey(h, ID_HOTKEY_T);
+        if (ok_c) UnregisterHotKey(h, ID_HOTKEY_C);
+        g_hotkey_enabled = FALSE;
+        filelog(LOG_WARN,
+                L"[UI] 注册全局热键失败：Ctrl+Alt+T=%s(错误码 %lu)，Ctrl+Alt+C=%s(错误码 %lu)；快捷键未启用",
+                ok_t ? L"成功" : L"失败", (unsigned long)err_t,
+                ok_c ? L"成功" : L"失败", (unsigned long)err_c);
+        return FALSE;
+    }
+    g_hotkey_enabled = TRUE;
+    applog(CH_ENGINE, LOG_UI, L"[UI] 快捷键已注册：Ctrl+Alt+T=读写测试 / Ctrl+Alt+C=复制");
+    return TRUE;
 }
 
 /* ============================================================
@@ -1123,6 +1154,10 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_CREATE: {
         g_hmain = h;
+        /* P2-7：RichEdit 不可用时以 STATIC 样式创建（避免把 ES_* 位误解释为其它 STATIC 样式） */
+        UINT st_ro       = g_riched_ok ? ES_READONLY : SS_LEFT;
+        UINT st_ro_ctr   = g_riched_ok ? (ES_READONLY | ES_MULTILINE | ES_CENTER) : SS_CENTER;
+        UINT st_ro_multi = g_riched_ok ? (ES_MULTILINE | ES_READONLY | WS_VSCROLL) : SS_LEFT;
         #define MKCTL(cls, ex, style, id, txt) \
             CreateWindowExW(ex, cls, txt, WS_CHILD | WS_VISIBLE | (style), \
                             0, 0, 10, 10, h, (HMENU)(INT_PTR)(id), g_hinst, NULL)
@@ -1136,34 +1171,38 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_RWTEST, L"读写测试");
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_CONFIG, L"配置");
         g_hchk_top = MKCTL(L"BUTTON", 0, BS_AUTOCHECKBOX, IDC_CHK_TOPMOST, L"窗口置顶");
-        g_hchk_hotkey = MKCTL(L"BUTTON", 0, BS_AUTOCHECKBOX, IDC_CHK_HOTKEY, L"快捷键使能");
+        /* F2：AUTO_COPY/AUTO_TEST 只读状态框（灰色禁用，仅显示当前机型配置；值由 update_auto_flags_ui 同步） */
+        g_hchk_autocopy = MKCTL(L"BUTTON", 0, BS_AUTOCHECKBOX | WS_DISABLED,
+                                IDC_CHK_AUTO_COPY, L"自动复制(AUTO_COPY)");
+        g_hchk_autotest = MKCTL(L"BUTTON", 0, BS_AUTOCHECKBOX | WS_DISABLED,
+                                IDC_CHK_AUTO_TEST, L"自动测试(AUTO_TEST)");
+        g_hchk_hotkey = MKCTL(L"BUTTON", 0, BS_AUTOCHECKBOX, IDC_CHK_HOTKEY,
+                              L"快捷键使能（Ctrl+Alt+T/C）");
         g_hlabel = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_LABEL, L"标签：");
-        g_hautomode = MKCTL(L"RICHEDIT50W", 0, ES_READONLY | ES_MULTILINE | ES_CENTER, IDC_STC_AUTOMODE, L"MANUAL");
+        g_hautomode = MKCTL(g_riched_class, 0, st_ro_ctr, IDC_STC_AUTOMODE, L"MANUAL");
         g_hsrcpath = MKCTL(L"STATIC", 0, SS_LEFT | SS_ENDELLIPSIS, IDC_STC_SRCPATH, L"SRCPATH：");
         g_hcount = MKCTL(L"STATIC", 0, SS_CENTER, IDC_STC_INSERTCOUNT, L"计数:0000");
+        /* F3：READRULE 判定规则标签栏（AUTO_TEST=1 时才显示内容） */
+        g_hreadrule = MKCTL(L"STATIC", 0, SS_LEFT | SS_ENDELLIPSIS, IDC_STC_READRULE, L"");
         g_hdev = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_DEVICE, L"设备状态：检测中…");
-        g_herr = MKCTL(L"RICHEDIT50W", 0, ES_READONLY, IDC_STC_ERROR, L"");
+        g_herr = MKCTL(g_riched_class, 0, st_ro, IDC_STC_ERROR, L"");
         g_hprog = MKCTL(PROGRESS_CLASSW, 0, PBS_SMOOTH, IDC_PBAR_TASK, L"");
         g_hprogtitle = MKCTL(L"STATIC", 0, SS_LEFT, IDC_STC_PROGTITLE, L"任务进度：");
         g_hprogpct = MKCTL(L"STATIC", 0, SS_RIGHT, IDC_STC_PROGPCT, L"0%");
 
         /* 底部监控窗格 */
-        g_hmonstatus = MKCTL(L"RICHEDIT50W", 0, ES_READONLY | ES_CENTER, IDC_STC_MONSTATUS, L"监控已停止");
+        g_hmonstatus = MKCTL(g_riched_class, 0, st_ro_ctr, IDC_STC_MONSTATUS, L"监控已停止");
         g_hmonfile = MKCTL(L"STATIC", 0, SS_CENTER, IDC_STC_MONFILE, L"");
         g_hmonfile2 = MKCTL(L"STATIC", 0, SS_CENTER, IDC_STC_MONFILE2, L"");
         g_hmonbtn[0] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_MONSTART, L"开始监控");
         g_hmonbtn[1] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_MONSTOP, L"停止监控");
         g_hmonbtn[2] = MKCTL(L"BUTTON", 0, BS_OWNERDRAW, IDC_BTN_EXIT, L"退出");
         MKCTL(L"BUTTON", 0, BS_PUSHBUTTON, IDC_BTN_CLEARCMD, L"清屏");
-        g_hcmd[0] = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
-                          ES_MULTILINE | ES_READONLY | WS_VSCROLL, IDC_EDIT_ENGINE, L"");
-        g_hcmd[1] = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
-                          ES_MULTILINE | ES_READONLY | WS_VSCROLL, IDC_EDIT_IDENT, L"");
-        g_hverdict = MKCTL(L"RICHEDIT50W", 0, ES_READONLY | ES_CENTER, IDC_STC_READVERDICT, L"");
-        g_hfile[0] = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
-                           ES_MULTILINE | ES_READONLY | WS_VSCROLL, IDC_EDIT_FILE, L"");
-        g_hfile[1] = MKCTL(L"RICHEDIT50W", WS_EX_CLIENTEDGE,
-                           ES_MULTILINE | ES_READONLY | WS_VSCROLL, IDC_EDIT_FILE2, L"");
+        g_hcmd[0] = MKCTL(g_riched_class, WS_EX_CLIENTEDGE, st_ro_multi, IDC_EDIT_ENGINE, L"");
+        g_hcmd[1] = MKCTL(g_riched_class, WS_EX_CLIENTEDGE, st_ro_multi, IDC_EDIT_IDENT, L"");
+        g_hverdict = MKCTL(g_riched_class, 0, st_ro_ctr, IDC_STC_READVERDICT, L"");
+        g_hfile[0] = MKCTL(g_riched_class, WS_EX_CLIENTEDGE, st_ro_multi, IDC_EDIT_FILE, L"");
+        g_hfile[1] = MKCTL(g_riched_class, WS_EX_CLIENTEDGE, st_ro_multi, IDC_EDIT_FILE2, L"");
         #undef MKCTL
         return 0;
     }
@@ -1181,6 +1220,28 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_SIZE:
         layout();
         return 0;
+
+    case WM_GETMINMAXINFO: {
+        /* P2-6：最小窗口尺寸按当前 DPI 缩放，防止缩到负布局。
+         * 宽度需容纳第一行（机型下拉 200 + 7 个 88 宽按钮 + 边距）；高度留出各窗格。 */
+        MINMAXINFO* mmi = (MINMAXINFO*)lp;
+        mmi->ptMinTrackSize.x = dpi_scale(880);
+        mmi->ptMinTrackSize.y = dpi_scale(600);
+        return 0;
+    }
+
+    case WM_CTLCOLORSTATIC: {
+        /* P3-1：IDC_STC_MONFILE/IDC_STC_MONFILE2 为 STATIC，EM_SETCHARFORMAT 无效；
+         * 在此设置文字颜色并返回窗口背景刷（保留居中/字体由控件样式决定）。 */
+        HDC hdc = (HDC)wp;
+        HWND hctl = (HWND)lp;
+        SetBkMode(hdc, TRANSPARENT);
+        if (hctl == g_hmonfile)       SetTextColor(hdc, g_monfile_col);
+        else if (hctl == g_hmonfile2) SetTextColor(hdc, g_monfile2_col);
+        else                          SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
+        SetBkColor(hdc, GetSysColor(COLOR_WINDOW));
+        return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+    }
 
     case WM_DRAWITEM: {
         /* 自绘监控按钮：按状态变色（禁用=浅灰，开始=绿，停止=红，退出=灰） */
@@ -1208,6 +1269,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_COMMAND: {
+        if (g_closing) return 0;   /* 退出等待中：忽略新的界面命令，防止重入 */
         int id = LOWORD(wp);
         int code = HIWORD(wp);
         switch (id) {
@@ -1225,18 +1287,29 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                         if (newsel < 0) newsel = 0;
                         g_cur_model = newsel;
                         SendMessageW(g_hmodel, CB_SETCURSEL, newsel, 0);
+                        /* F2/F3：reload 内的 refresh 发生在 g_cur_model 更新之前，
+                         * 这里补一次，确保 AUTO_COPY/AUTO_TEST 与 READRULE 立即切到新机型 */
+                        update_auto_flags_ui();
+                        update_readrule_text();
+                        applog(CH_ENGINE, LOG_UI, L"[UI] 机型切换为：%s（内部键 %s，配置已重载，与轮询解耦）",
+                               g_cfg.models[g_cur_model].display, g_cfg.models[g_cur_model].internal);
+                    } else {
+                        /* 重载失败：保持原机型选中，不得假报切换成功（L14） */
+                        SendMessageW(g_hmodel, CB_SETCURSEL, g_cur_model, 0);
+                        applog(CH_ENGINE, LOG_ERR,
+                               L"[UI] 切换机型失败：配置重载失败，保持原机型 %s",
+                               (g_cur_model >= 0 && g_cur_model < g_cfg.nmodels)
+                                   ? g_cfg.models[g_cur_model].internal : L"?");
                     }
-                    applog(CH_ENGINE, LOG_UI, L"[UI] 机型切换为：%s（内部键 %s，配置已重载，与轮询解耦）",
-                           g_cfg.models[g_cur_model].display, g_cfg.models[g_cur_model].internal);
                     refresh_buttons();
                 }
             }
             break;
         case IDC_BTN_START:
-            task_run_async(g_cur_model, TRIGGER_MANUAL);
+            task_run_async(g_cur_model, TRIGGER_MANUAL, 0);
             break;
         case IDC_BTN_STOP:
-            InterlockedExchange(&g_stop, 1);
+            ops_request_stop();
             applog(CH_ENGINE, LOG_UI, L"[UI] 操作员请求停止");
             break;
         case IDC_BTN_FORMAT:
@@ -1269,7 +1342,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             if (code == BN_CLICKED) {
                 InterlockedExchange(&g_monitoring, 0);
                 /* 仅在任务执行中才置停止标志；设备轮询/状态显示不受监控开关影响 */
-                if (g_running) InterlockedExchange(&g_stop, 1);
+                if (g_running) ops_request_stop();
                 set_monstatus(L"监控已停止", L"", RGB(200, 0, 0));
                 applog(CH_ENGINE, LOG_UI, L"[UI] 操作员停止监控（设备检测仍持续显示插拔信息）");
                 refresh_buttons();
@@ -1296,16 +1369,14 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         case IDC_CHK_HOTKEY:
             if (code == BN_CLICKED) {
                 BOOL on = SendMessageW(g_hchk_hotkey, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                if (on) {
-                    RegisterHotKey(h, ID_HOTKEY_T, 0, 'T');
-                    RegisterHotKey(h, ID_HOTKEY_C, 0, 'C');
-                } else {
-                    UnregisterHotKey(h, ID_HOTKEY_T);
-                    UnregisterHotKey(h, ID_HOTKEY_C);
+                if (!hotkeys_enable(h, on)) {
+                    /* 注册失败：恢复未勾选，不得显示为“已注册” */
+                    SendMessageW(g_hchk_hotkey, BM_SETCHECK, BST_UNCHECKED, 0);
+                    MessageBoxW(h,
+                        L"注册全局热键 Ctrl+Alt+T / Ctrl+Alt+C 失败（可能被其它程序占用）。\n"
+                        L"请关闭占用程序后重试。",
+                        L"快捷键", MB_OK | MB_ICONWARNING);
                 }
-                g_hotkey_enabled = on;
-                applog(CH_ENGINE, LOG_UI, L"[UI] 快捷键使能 %s（T/C 全局热键%s）",
-                       on ? L"开启" : L"关闭", on ? L"已注册" : L"已注销");
             }
             break;
         }
@@ -1313,13 +1384,22 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_HOTKEY:
+        if (g_closing) return 0;
+        /* P1-17：热键=单操作（Ctrl+Alt+T 读写测试 / Ctrl+Alt+C 复制），任务执行中忽略并记日志 */
         if (wp == ID_HOTKEY_T) {
-            applog(CH_ENGINE, LOG_UI, L"[UI] 热键 T：执行任务");
-            task_run_async(g_cur_model, TRIGGER_MANUAL);
-        }
-        if (wp == ID_HOTKEY_C) {
-            applog(CH_ENGINE, LOG_UI, L"[UI] 热键 C：执行任务");
-            task_run_async(g_cur_model, TRIGGER_MANUAL);
+            applog(CH_ENGINE, LOG_UI, L"[UI] 热键 Ctrl+Alt+T：读写测试");
+            if (g_running) {
+                applog(CH_ENGINE, LOG_WARN, L"[UI] 任务执行中，忽略热键（读写测试）");
+                return 0;
+            }
+            run_single(OP_RWTEST);
+        } else if (wp == ID_HOTKEY_C) {
+            applog(CH_ENGINE, LOG_UI, L"[UI] 热键 Ctrl+Alt+C：复制");
+            if (g_running) {
+                applog(CH_ENGINE, LOG_WARN, L"[UI] 任务执行中，忽略热键（复制）");
+                return 0;
+            }
+            run_single(OP_COPY);
         }
         return 0;
 
@@ -1330,47 +1410,81 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         free((void*)lp);
         return 0;
     }
-    case WM_APP_PROGRESS: {
-        SendMessageW(g_hprog, PBM_SETPOS, wp, 0);
-        wchar_t pt[16];
-        _snwprintf(pt, 16, L"%d%%", (int)wp);
-        SetWindowTextW(g_hprogpct, pt);
+    case WM_APP_PROGRESS:
+        /* P2-2：ops 侧字节/文件/格式化进度统一换算 0..100 后投递，这里只走唯一更新入口 */
+        post_progress_pct((int)wp);
         return 0;
-    }
     case WM_APP_DEVCOUNT: {
-        DWORD mask = (DWORD)wp;
+        /* 新协议：wparam = 本次变化的盘符位图（可多位），lparam = 1插入 / 0拔出。
+         * 同一次轮询最多两条消息（先拔出位图、后插入位图），不再传最终全量 mask。 */
+        DWORD bits = (DWORD)wp;
         BOOL inserted = lp != 0;
-        DWORD changed = inserted ? (mask & ~g_dev_mask) : (g_dev_mask & ~mask);
-        g_dev_mask = mask;
-        update_device_text();
+        wchar_t first = 0;
+        /* 1) 先把本消息所有位增量维护进 g_dev_mask（不求差） */
         for (wchar_t d = L'C'; d <= L'Z'; d++) {
-            if (changed & (1u << (d - L'A'))) {
+            DWORD bit = 1u << (d - L'A');
+            if (!(bits & bit)) continue;
             if (inserted) {
-                applog(CH_ENGINE, LOG_UI, L"[DEV] 检测到可移动磁盘 %c:\\ 插入", d);
-                /* 每次插盘先清掉上一轮的信息状态：出错徽标熄灭 + CMD-A 清屏，本轮日志从头显示 */
-                set_error_badge(FALSE, NULL);
-                SetWindowTextW(g_hcmd[0], L"");
-                set_ok_badge(L"");   /* 绿色正常提示（后续任务出错会转红） */
-                /* 进度条与文件内容窗格同步复位，本轮从零显示 */
-                SendMessageW(g_hprog, PBM_SETPOS, 0, 0);
-                SetWindowTextW(g_hprogpct, L"0%");
-                SetWindowTextW(g_hfile[0], L"");
-                SetWindowTextW(g_hfile[1], L"");
-                set_text_color(g_hmonfile, L"", RGB(0, 90, 200));
-                set_text_color(g_hmonfile2, L"", RGB(0, 90, 200));
+                g_dev_mask |= bit;
+                if (!first) first = d;
+            } else {
+                g_dev_mask &= ~bit;
+            }
+        }
+        /* 2) 所有位更新完统一刷新一次设备/标签行 */
+        update_device_text();
+
+        if (inserted) {
+            /* 3) 新盘会话清理：只在“有插入且当前无任务运行”时做一次（不在位循环里重复） */
+            if (!g_running) {
+                SetWindowTextW(g_hcmd[0], L"");   /* 保留 batch2：新盘会话清 CMD-A */
+                reset_task_ui(TRUE);              /* P2-1：判定/内容/命中行/进度/徽标统一复位 */
+            }
+            for (wchar_t d = L'C'; d <= L'Z'; d++) {
+                DWORD bit = 1u << (d - L'A');
+                if (!(bits & bit)) continue;
+                applog(CH_ENGINE, LOG_UI, L"[DEV] 检测到可移动磁盘 %c:\\ 插入%s", d,
+                       g_running ? L"（任务执行中：只记日志，不清屏）" : L"");
                 /* 插拔计数器：仅监控开启时计数；4 位循环（9999→0000），退出程序不保存 */
                 if (g_monitoring) {
                     InterlockedIncrement(&g_inscount);
                     update_count_text();
                 }
-                /* 机型 = 当前下拉框选择（与轮询解耦）；监控开启或机型 AUTORUN=1 时自动执行 */
-                    CFGMODEL* m = &g_cfg.models[g_cur_model];
-                    if ((g_monitoring || cfg_get_int(m, L"AUTORUN", 0)) && !g_running)
-                        task_run_async(g_cur_model, TRIGGER_AUTO);
+            }
+            /* 4) 自动触发 / 待处理：多个插入只取第一个盘符 */
+            if (first && run_auto_mode()) {
+                if (!g_running) {
+                    task_run_async(g_cur_model, TRIGGER_AUTO, first);   /* 用刚插入的盘符 */
+                } else if (!g_pending_drive) {
+                    g_pending_drive = first;
+                    applog(CH_ENGINE, LOG_UI,
+                           L"[DEV] 任务执行中插入 %c:\\：记为待处理盘，任务结束后若自动模式仍开启则补执行",
+                           first);
                 } else {
-                    applog(CH_ENGINE, LOG_UI, L"[DEV] 可移动磁盘 %c:\\ 已拔出", d);
-                    SendMessageW(g_hprog, PBM_SETPOS, 0, 0);
+                    applog(CH_ENGINE, LOG_UI,
+                           L"[DEV] 任务执行中插入 %c:\\：已有待处理盘 %c:\\（先到先处理），本次不覆盖",
+                           first, g_pending_drive);
                 }
+            }
+        } else {
+            for (wchar_t d = L'C'; d <= L'Z'; d++) {
+                DWORD bit = 1u << (d - L'A');
+                if (!(bits & bit)) continue;
+                applog(CH_ENGINE, LOG_UI, L"[DEV] 可移动磁盘 %c:\\ 已拔出", d);
+                if (g_pending_drive == d) {
+                    g_pending_drive = 0;
+                    applog(CH_ENGINE, LOG_UI,
+                           L"[DEV] 待处理盘 %c:\\ 已拔出，取消其自动执行", d);
+                }
+            }
+            /* P2-1/P2-2：拔出——进度归零；空闲时同时清判定/内容/命中行，避免残留上一盘结果 */
+            post_progress_pct(0);
+            if (!g_running) {
+                SetWindowTextW(g_hverdict, L"");
+                if (g_hfile[0]) SetWindowTextW(g_hfile[0], L"");
+                if (g_hfile[1]) SetWindowTextW(g_hfile[1], L"");
+                set_static_text(g_hmonfile, L"", RGB(0, 90, 200));
+                set_static_text(g_hmonfile2, L"", RGB(0, 90, 200));
             }
         }
         return 0;
@@ -1417,7 +1531,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             wchar_t* nl = wcschr(s, L'\n');
             if (wp == 1) {
                 const wchar_t* sub = nl ? nl + 1 : s;
-                set_text_color(g_hmonfile2, sub, RGB(0, 90, 200));
+                set_static_text(g_hmonfile2, sub, RGB(0, 90, 200));
             }
             else if (nl) { *nl = 0; set_monstatus(s, nl + 1, RGB(60, 60, 60)); }
             else set_monstatus(s, L"", RGB(60, 60, 60));
@@ -1425,27 +1539,149 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
     }
-    case WM_APP_TASKDONE:
-        InterlockedExchange(&g_running, 0);
-        InterlockedExchange(&g_stop, 0);
-        /* 徽标随结果刷新：成功=绿"任务完成"；已停止=绿"任务已停止"；失败时红色出错徽标已由 ops 置位 */
-        if (wp == 0)      set_ok_badge(L"任务完成");
-        else if (wp == 2) set_ok_badge(L"任务已停止");
-        refresh_buttons();
+    case WM_APP_DEVREFRESH:
+        /* 格式化等操作完成后设备信息变化：重新采集并刷新设备/标签行 */
+        update_device_text();
         return 0;
+    case WM_APP_TASKDONE: {
+        int rc = (int)wp;
+        InterlockedExchange(&g_running, 0);
+        /* join 工作线程（消息在线程末尾投递，2s 足够）并释放句柄 */
+        if (g_worker) {
+            WaitForSingleObject(g_worker, 2000);
+            CloseHandle(g_worker);
+            g_worker = NULL;
+        }
+        ops_reset_stop();
+
+        /* P2-3：单操作显示“<操作名>完成/已停止”，整任务仍显示“任务完成/按配置跳过/已停止” */
+        const wchar_t* opname = (g_single_op >= 0) ? op_display_name(g_single_op) : NULL;
+        wchar_t badge[160];
+        if (rc == OP_OK) {
+            if (opname) {
+                _snwprintf(badge, 160, L"%s完成", opname);
+                badge[159] = 0;
+                set_ok_badge(badge);
+            } else {
+                set_ok_badge(L"任务完成");
+            }
+        } else if (rc == OP_SKIP_CFG) {
+            if (opname) {
+                _snwprintf(badge, 160, L"%s：按配置跳过（未执行）", opname);
+                badge[159] = 0;
+                set_ok_badge(badge);
+            } else {
+                set_ok_badge(L"按配置跳过（未执行）");
+            }
+        } else if (rc == OP_STOPPED) {
+            if (opname) {
+                _snwprintf(badge, 160, L"%s已停止", opname);
+                badge[159] = 0;
+                set_ok_badge(badge);
+            } else {
+                set_ok_badge(L"任务已停止");
+            }
+        }
+        g_single_op = -1;
+
+        /* P2-1/P2-2：结束后的界面状态——OK 保留结果且进度 100；SKIP/STOPPED 清旧判定与内容，
+         * 避免误读上一轮；FAIL 保留失败现场（红徽标由 ops 置位）。 */
+        post_progress_pct(rc == OP_OK ? 100 : 0);
+        if (rc == OP_SKIP_CFG || rc == OP_STOPPED) {
+            SetWindowTextW(g_hverdict, L"");
+            SetWindowTextW(g_hfile[0], L"");
+            SetWindowTextW(g_hfile[1], L"");
+            set_static_text(g_hmonfile, L"", RGB(0, 90, 200));
+            set_static_text(g_hmonfile2, L"", RGB(0, 90, 200));
+        }
+        if (rc == OP_FAIL)
+            set_monstatus(L"任务失败（详见 CMD-A 日志）", L"", RGB(200, 0, 0));
+        else if (rc == OP_STOPPED)
+            set_monstatus(L"任务已停止", L"", RGB(200, 0, 0));
+        else
+            set_monstatus_idle();
+        refresh_buttons();
+
+        /* 待处理盘：任务结束后若仍插入且仍自动模式 → 补触发一次；失败/停止不自动重试，避免失败循环 */
+        if (g_pending_drive) {
+            wchar_t pd = g_pending_drive;
+            g_pending_drive = 0;   /* 触发前先清空（无论后续是否真的触发） */
+            DWORD bit = 1u << (pd - L'A');
+            if (g_closing) {
+                applog(CH_ENGINE, LOG_UI,
+                       L"[DEV] 退出流程中，取消待处理盘 %c:\\ 的自动执行", pd);
+            } else if (rc == OP_FAIL || rc == OP_STOPPED) {
+                applog(CH_ENGINE, LOG_WARN,
+                       L"[DEV] 上一任务%s，取消待处理盘 %c:\\ 的自动执行（不自动重试）",
+                       rc == OP_FAIL ? L"失败" : L"被停止", pd);
+            } else if (!(g_dev_mask & bit)) {
+                applog(CH_ENGINE, LOG_UI,
+                       L"[DEV] 待处理盘 %c:\\ 已不在位，取消自动执行", pd);
+            } else if (!run_auto_mode()) {
+                applog(CH_ENGINE, LOG_UI,
+                       L"[DEV] 自动模式已关闭，取消待处理盘 %c:\\ 的自动执行", pd);
+            } else if (!g_running) {
+                applog(CH_ENGINE, LOG_UI,
+                       L"[DEV] 任务结束，补执行待处理盘 %c:\\ 的自动任务", pd);
+                task_run_async(g_cur_model, TRIGGER_AUTO, pd);
+            }
+        }
+        return 0;
+    }
 
     case WM_CLOSE:
+        if (g_closing) return 0;   /* 退出等待中：忽略重复关闭请求 */
         if (g_running) {
-            if (MessageBoxW(h, L"任务正在执行，确认退出？", L"退出确认",
+            if (MessageBoxW(h, L"任务正在执行，确认停止任务并退出？", L"退出确认",
                             MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
                 return 0;
+            /* 先请求停止，再带消息泵等待工作线程结束（最长 30s，期间 g_closing 防重入） */
+            g_closing = TRUE;
+            g_pending_drive = 0;   /* 退出流程：取消待处理盘的自动补执行 */
+            ops_request_stop();
+            applog(CH_ENGINE, LOG_UI, L"[UI] 退出：已请求停止任务，等待工作线程结束…");
+            BOOL forced = FALSE;
+            if (!wait_worker_exit(30000)) {
+                applog(CH_ENGINE, LOG_WARN,
+                       L"[UI] 退出：等待工作线程超时（30s），强制退出（任务可能未完全结束）");
+                forced = TRUE;
+            }
+            /* 等待期间 WM_APP_TASKDONE 可能已完成 join，这里兜底 */
+            if (g_worker) {
+                if (WaitForSingleObject(g_worker, 2000) != WAIT_OBJECT_0) {
+                    applog(CH_ENGINE, LOG_WARN, L"[UI] 退出：工作线程仍未结束，强制退出");
+                    forced = TRUE;
+                }
+                CloseHandle(g_worker);
+                g_worker = NULL;
+            }
+            if (forced) {
+                /* P3-6：强制退出 → 进程退出码 3（main/gui_run 返回给调用方） */
+                g_exit_code = 3;
+                filelog(LOG_ERR, L"[SYS] 强制退出：工作线程未在超时内结束（退出码 3，任务可能未完成）");
+            }
+            InterlockedExchange(&g_running, 0);
+            ops_reset_stop();
+            refresh_buttons();
         }
+        g_pending_drive = 0;   /* 退出：清空待处理盘 */
         DestroyWindow(h);
         return 0;
 
     case WM_DESTROY:
         dev_poll_stop();
-        PostQuitMessage(0);
+        ops_request_stop();   /* 兜底：退出后不再启动新操作 */
+        g_pending_drive = 0;
+        if (g_worker) {
+            if (WaitForSingleObject(g_worker, 2000) != WAIT_OBJECT_0) {
+                /* 兜底 join 仍失败：按强制退出处理（退出码 3），避免报告正常退出 */
+                g_exit_code = 3;
+                filelog(LOG_ERR, L"[SYS] 销毁窗口时工作线程仍未结束（退出码 3，任务可能未完成）");
+            }
+            CloseHandle(g_worker);
+            g_worker = NULL;
+        }
+        PostQuitMessage(g_exit_code);   /* P3-6：正常 0 / 强制退出 3 */
         return 0;
     }
     return DefWindowProcW(h, msg, wp, lp);
@@ -1456,10 +1692,28 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 int gui_run(HINSTANCE hInst, int nShow)
 {
     g_hinst = hInst;
+    g_exit_code = 0;   /* P3-6：单进程只运行一次 gui_run，显式复位退出码 */
     dpi_init();
 
-    HMODULE me = LoadLibraryW(L"Msftedit.dll");   /* RICHEDIT50W 类 */
-    if (!me) LoadLibraryW(L"Riched20.dll");
+    /* P2-7：RichEdit 类回退链 Msftedit(RICHEDIT50W)→Riched20(RICHEDIT20W)→STATIC。
+     * 早期版本固定创建 RICHEDIT50W，导致 Riched20 回退无效。 */
+    HMODULE me = LoadLibraryW(L"Msftedit.dll");
+    if (me) {
+        g_riched_class = L"RICHEDIT50W";
+        g_riched_ok = TRUE;
+    } else {
+        me = LoadLibraryW(L"Riched20.dll");
+        if (me) {
+            g_riched_class = L"RICHEDIT20W";
+            g_riched_ok = TRUE;
+        } else {
+            g_riched_class = L"STATIC";
+            g_riched_ok = FALSE;
+            filelog(LOG_WARN,
+                    L"[UI] RichEdit 不可用（Msftedit.dll/Riched20.dll 均加载失败），"
+                    L"文本窗格回退 STATIC 只读显示（禁用富文本格式化）");
+        }
+    }
 
     INITCOMMONCONTROLSEX icc;
     icc.dwSize = sizeof(icc);
@@ -1471,20 +1725,14 @@ int gui_run(HINSTANCE hInst, int nShow)
     wc.lpfnWndProc = wnd_proc;
     wc.hInstance = hInst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIcon = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APP_ICON),
+                                 IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
+    if (!wc.hIcon) wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);   /* 资源缺失时回退 */
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    wc.lpszClassName = L"UDK_MAINCLASS";
+    wc.lpszClassName = UDK_MAIN_WNDCLASS;
     RegisterClassW(&wc);
 
-    WNDCLASSW wc2;
-    memset(&wc2, 0, sizeof(wc2));
-    wc2.lpfnWndProc = cfg_proc;
-    wc2.hInstance = hInst;
-    wc2.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc2.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    wc2.lpszClassName = L"UDK_CFGCLASS";
-    wc2.style = CS_HREDRAW | CS_VREDRAW;
-    RegisterClassW(&wc2);
+    cfg_register_class(hInst);   /* 配置窗口类注册（gui_config.c） */
 
     g_dpi = get_system_dpi();
 
@@ -1494,12 +1742,12 @@ int gui_run(HINSTANCE hInst, int nShow)
     int x = wa.right > W ? (wa.right - W) / 2 : CW_USEDEFAULT;
     int y2 = wa.bottom > H ? (wa.bottom - H) / 3 : CW_USEDEFAULT;
 
-    wchar_t title[300];
-    _snwprintf(title, 300, L"%s v%s", g_cfg.title, g_cfg.version);
-    HWND h = CreateWindowExW(0, L"UDK_MAINCLASS", title,
+    /* 主标题由 update_main_title() 统一生成（g_cfg.title/version），reload 后复用同一函数 */
+    HWND h = CreateWindowExW(0, UDK_MAIN_WNDCLASS, L"",
                              WS_OVERLAPPEDWINDOW,
                              x, y2, W, H, NULL, NULL, hInst, NULL);
     if (!h) return -1;
+    update_main_title();
 
     dpi_update_font();
 
@@ -1522,27 +1770,45 @@ int gui_run(HINSTANCE hInst, int nShow)
     refresh_run_state();   /* 启动时按配置推导：本机型 AUTORUN=1 直接显示 AUTO */
     set_monstatus(L"监控已停止", L"", RGB(200, 0, 0));   /* 初始状态：红色 */
 
-    /* 快捷键默认不注册，由"快捷键使能"复选框控制 */
-    if (g_hotkey_enabled) {
-        RegisterHotKey(h, ID_HOTKEY_T, 0, 'T');
-        RegisterHotKey(h, ID_HOTKEY_C, 0, 'C');
-    }
+    /* TOPMOST：初始置顶状态由配置键 TOPMOST 决定（缺省 1=开启；勾选框同步显示） */
+    SendMessageW(g_hchk_top, BM_SETCHECK,
+                 g_cfg.topmost ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetWindowPos(h, g_cfg.topmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE);
+    applog(CH_ENGINE, LOG_UI, L"[SYS] 窗口置顶初始状态：%s（TOPMOST=%d）",
+           g_cfg.topmost ? L"开启" : L"关闭", g_cfg.topmost);
 
-    applog(CH_ENGINE, LOG_UI, L"[SYS] %s v%s 启动（ini：%s）",
-           g_cfg.title, g_cfg.version, g_ini_path);
+    /* 快捷键默认不注册，由"快捷键使能"复选框控制（Ctrl+Alt+T=读写测试 / Ctrl+Alt+C=复制） */
+
+    /* B 线（task-22）要求：启动日志同时显示配置版本与软件版本，便于现场区分两套版本 */
+    if (g_cfg.version[0])
+        applog(CH_ENGINE, LOG_UI, L"[SYS] %s v%s（软件 v%s）启动（ini：%s）",
+               g_cfg.title, g_cfg.version, APP_VERSION_W, g_ini_path);
+    else
+        applog(CH_ENGINE, LOG_UI, L"[SYS] %s（软件 v%s）启动（ini：%s）",
+               g_cfg.title, APP_VERSION_W, g_ini_path);
     applog(CH_ENGINE, LOG_UI, L"[SYS] 已加载 %d 个机型，当前默认：%s",
            g_cfg.nmodels, g_cfg.models[g_cur_model].internal);
     if (!g_cfg.adminpass[0])
         applog(CH_ENGINE, LOG_WARN, L"[SYS] 未设置管理员密码，配置窗口仅只读");
 
-    /* 启动设备轮询（机型匹配与轮询解耦） */
-    dev_poll_start(h);
-    /* 启动时先枚举一次：仅刷新设备/标签行显示（已插着的盘不计数、不触发任务） */
+    /* 启动设备检测：先枚举一次作为基线（已插着的盘不计数、不触发任务），再启动轮询。
+     * 顺序很重要：先有 g_dev_mask 基线，轮询首轮才不会把“已存在的盘”误报为插入事件。 */
     dev_enum_removable(&g_dev_mask, NULL);
     update_device_text();
+    dev_poll_start(h);
 
+    /* 退出码（P3-6）：0=正常关闭；1=GetMessageW 失败；3=退出等待工作线程超时强制退出 */
     MSG msg;
-    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+    int ret;
+    while ((ret = GetMessageW(&msg, NULL, 0, 0)) != 0) {
+        if (ret == -1) {
+            DWORD err = GetLastError();
+            filelog(LOG_ERR, L"[SYS] 消息循环失败：GetMessageW 返回 -1（错误码 %lu），退出",
+                    (unsigned long)err);
+            g_exit_code = 1;
+            break;
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
@@ -1550,5 +1816,5 @@ int gui_run(HINSTANCE hInst, int nShow)
     UnregisterHotKey(h, ID_HOTKEY_T);
     UnregisterHotKey(h, ID_HOTKEY_C);
     if (me) FreeLibrary(me);
-    return (int)msg.wParam;
+    return g_exit_code;
 }

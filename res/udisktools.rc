@@ -1,0 +1,57 @@
+/* ============================================================
+ * res/udisktools.rc - 程序资源：版本信息 / 图标 / 清单
+ * 由 Makefile 或 CMake 用 windres 编译：
+ *   windres -I res -I src -o udisktools_res.o res/udisktools.rc
+ * ============================================================ */
+#include "version.h"
+
+#pragma code_page(65001)
+
+/* 版本资源常量：不依赖 rc.exe/llvm-rc/windres 的默认 SDK 头文件搜索路径，
+ * 这里按 SDK 值自行兜底定义（windres 未自动包含 winver.h）。 */
+#ifndef VOS_NT_WINDOWS32
+#define VOS_NT_WINDOWS32 0x00040004L
+#endif
+#ifndef VFT_APP
+#define VFT_APP 0x00000001L
+#endif
+#ifndef VFT2_UNKNOWN
+#define VFT2_UNKNOWN 0x00000000L
+#endif
+
+/* ---------- 图标（ID 见 ui/resource.h IDI_APP_ICON） ---------- */
+101 ICON "udisktools.ico"
+
+/* ---------- 应用程序清单（RT_MANIFEST = 24，ID 1） ---------- */
+1 24 "udisktools.manifest"
+
+/* ---------- 版本信息 ---------- */
+1 VERSIONINFO
+ FILEVERSION    APP_VERSION_MAJOR,APP_VERSION_MINOR,APP_VERSION_PATCH,0
+ PRODUCTVERSION APP_VERSION_MAJOR,APP_VERSION_MINOR,APP_VERSION_PATCH,0
+ FILEFLAGSMASK  0x3fL
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        /* 0804 = zh-CN，04B0 = Unicode */
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "CompanyName",      "UdiskTools"
+            VALUE "FileDescription",  "U盘拷盘工具"
+            VALUE "FileVersion",      APP_VERSION
+            VALUE "InternalName",     "udisktools"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 UdiskTools"
+            VALUE "OriginalFilename", "udisktools.exe"
+            VALUE "ProductName",      APP_TITLE
+            VALUE "ProductVersion",   APP_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END

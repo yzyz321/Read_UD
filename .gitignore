@@ -1,4 +1,6 @@
 # Build artifacts
+# tests/run_tests.ps1 中间产物（测试 exe/主程序/日志）
+tests/build/
 build/
 bin/
 obj/
