@@ -19,19 +19,65 @@ jobs:
           update: false
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make
 
+      - name: Check default ini template
+        shell: pwsh
+        run: ./scripts/gen_default_ini.ps1 -Check
+
       - name: Build (make)
         shell: msys2 {0}
         run: |
           make CC=gcc
 
-      - name: Smoke test
+      # 测试门禁（P3-7）：统一由 tests/run_tests.ps1 驱动（-CC gcc 走 CI 的 MinGW gcc）
+      - name: Run tests
         shell: pwsh
         run: |
-          if (!(Test-Path bin/udisktools.exe)) { throw "build output missing" }
-          Write-Host "build OK"
+          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+          ./tests/run_tests.ps1 -CC gcc
+
+      # CLI 冒烟：GUI 子系统程序必须用 Start-Process+重定向捕获 stdout 与退出码
+      - name: Smoke test (CLI)
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path src/version.h -Pattern '^#define APP_VERSION\s+"([^"]+)"').Matches[0].Groups[1].Value
+          $exe = Join-Path (Get-Location) "bin/udisktools_v$ver.exe"
+          if (!(Test-Path $exe)) { throw "build output missing: $exe" }
+
+          function Invoke-UdkCli {
+            param([string[]]$CliArgs, [int]$ExpectedExit, [string]$ExpectedPattern)
+            $out = Join-Path $env:TEMP ("udk_cli_" + [guid]::NewGuid().ToString('N') + ".txt")
+            $err = "$out.err"
+            $p = Start-Process -FilePath $exe -ArgumentList $CliArgs -NoNewWindow -PassThru -Wait `
+                 -RedirectStandardOutput $out -RedirectStandardError $err
+            $text = ''
+            if (Test-Path $out) { $text = Get-Content -LiteralPath $out -Raw -Encoding UTF8 }
+            Write-Host ("exit={0} args=[{1}]" -f $p.ExitCode, ($CliArgs -join ' '))
+            Write-Host $text
+            if ($p.ExitCode -ne $ExpectedExit) {
+              throw ("unexpected exit code {0} (want {1}) for: {2}" -f $p.ExitCode, $ExpectedExit, ($CliArgs -join ' '))
+            }
+            if ($text -notmatch $ExpectedPattern) {
+              throw ("output does not match '{0}' for: {1}" -f $ExpectedPattern, ($CliArgs -join ' '))
+            }
+            Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
+          }
+
+          # --version：exit 0，含软件版本 1.2.0（FileVersion 1.2.0.0）与构建时间
+          Invoke-UdkCli -CliArgs @('--version') -ExpectedExit 0 -ExpectedPattern '1\.2\.0'
+          Invoke-UdkCli -CliArgs @('--version') -ExpectedExit 0 -ExpectedPattern '1\.2\.0\.0'
+          Invoke-UdkCli -CliArgs @('--version') -ExpectedExit 0 -ExpectedPattern '\d{1,2}:\d{2}:\d{2}'
+          # --check-ini 有效配置：exit 0，4 个机型 + 配置文件版本（ini [TOOLSINFO] VERSION）
+          Invoke-UdkCli -CliArgs @('--check-ini', '--ini', 'profiles/UdiskTools.ini') `
+                        -ExpectedExit 0 -ExpectedPattern '4 个机型'
+          Invoke-UdkCli -CliArgs @('--check-ini', '--ini', 'profiles/UdiskTools.ini') `
+                        -ExpectedExit 0 -ExpectedPattern '配置版本'
+          # --check-ini 不存在的 ini：exit 1（不弹窗阻塞）
+          Invoke-UdkCli -CliArgs @('--check-ini', '--ini', 'no_such.ini') `
+                        -ExpectedExit 1 -ExpectedPattern 'ini 加载失败'
+          Write-Host "CLI smoke OK"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: udisktools-${{ github.sha }}
-          path: bin/udisktools.exe
+          path: bin/udisktools_v*.exe

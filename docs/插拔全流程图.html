@@ -41,8 +41,64 @@
 </head>
 <body>
 <div class="canvas">
-  <div class="diagram-title">U盘插拔全流程图（UdiskTools v1.0）</div>
-  <div class="diagram-subtitle">主线：插盘检测 → AUTO/MANUAL 分流 → 整任务四步（识别·复制·读取判定·测试）→ 结果显示 → 拔出复位 → 循环；判断条件见橙色菱形</div>
+  <div class="diagram-title">U盘插拔全流程图（UdiskTools v1.2.0）</div>
+  <div class="diagram-subtitle">启动：ini 缺失弹窗二选一 + TOPMOST 置顶 → 主线：插盘检测 → AUTO/MANUAL 分流 → 整任务四步（识别·复制·读取判定·测试）→ 结果显示 → 拔出复位 → 循环；判断条件见橙色菱形</div>
+
+  <!-- ===================== 图 0：启动流程 ===================== -->
+  <h2 class="sec">图 0 · 启动流程：ini 缺失交互与窗口初始化（v1.2.0）</h2>
+  <p class="secnote">新增：UdiskTools.ini 不存在时弹窗由操作员选择——「是」=写内置默认配置后继续启动，「否」=直接退出；代码层面 GUI 拆分为 gui.c（主窗口）+ gui_config.c（配置窗口）+ gui_shared.h。</p>
+  <svg width="1184" height="760" viewBox="0 0 1184 760" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrow0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/>
+      </marker>
+    </defs>
+    <rect class="node-terminal" x="442" y="20" width="300" height="48" rx="22"/>
+    <text class="term-text" x="592" y="45">双击运行（单实例互斥）</text>
+    <path class="edge" d="M592,68 L592,96" marker-end="url(#arrow0)"/>
+
+    <polygon class="node-decision" points="592,100 742,158 592,216 442,158"/>
+    <text class="node-text" x="592" y="158">UdiskTools.ini 存在？</text>
+    <path class="edge" d="M742,158 L870,158" marker-end="url(#arrow0)"/>
+    <text class="edge-label" x="756" y="144">是</text>
+    <path class="edge" d="M592,216 L592,248" marker-end="url(#arrow0)"/>
+    <text class="edge-label" x="606" y="236">否</text>
+
+    <rect class="node-process" x="770" y="128" width="330" height="60" rx="8"/>
+    <text class="node-text" x="935" y="152">直接加载 ini（cfg_load）</text>
+    <text class="node-sub" x="935" y="174">解析失败 → 记日志并错误退出</text>
+    <path class="edge" d="M935,188 L935,330 L800,330" marker-end="url(#arrow0)"/>
+
+    <rect class="node-process" x="372" y="252" width="440" height="60" rx="8"/>
+    <text class="node-text" x="592" y="276">弹窗「配置文件不存在」二选一</text>
+    <text class="node-sub" x="592" y="298">是=以默认配置运行　否=直接退出</text>
+    <path class="edge" d="M372,282 L240,282" marker-end="url(#arrow0)"/>
+    <text class="edge-label" x="252" y="268">否</text>
+    <path class="edge" d="M592,312 L592,344" marker-end="url(#arrow0)"/>
+    <text class="edge-label" x="606" y="332">是</text>
+
+    <rect class="node-danger" x="60" y="252" width="180" height="60" rx="8"/>
+    <text class="node-text" x="150" y="282">退出（码 1）</text>
+
+    <rect class="node-process" x="380" y="348" width="424" height="76" rx="8"/>
+    <text class="node-text" x="592" y="372">原子写入内置默认配置（DEFAULT_INI_UTF8）</text>
+    <text class="node-sub" x="592" y="394">临时文件 + FlushFileBuffers + MoveFileEx；来源 profiles/UdiskTools_default.ini</text>
+    <text class="node-sub" x="592" y="412">写入后 cfg_load 重新加载（1 机型通用配置）</text>
+    <path class="edge" d="M592,424 L592,456" marker-end="url(#arrow0)"/>
+
+    <rect class="node-process" x="402" y="460" width="380" height="64" rx="8"/>
+    <text class="node-text" x="592" y="484">创建主窗口（gui.c）+ 注册配置窗口类</text>
+    <text class="node-sub" x="592" y="506">gui_config.c（UDK_CFGCLASS）· gui_shared.h 共享符号</text>
+    <path class="edge" d="M592,524 L592,556" marker-end="url(#arrow0)"/>
+
+    <rect class="node-process" x="372" y="560" width="440" height="64" rx="8"/>
+    <text class="node-text" x="592" y="584">TOPMOST 键决定初始置顶（缺省 1=置顶）</text>
+    <text class="node-sub" x="592" y="606">勾选框 IDC_CHK_TOPMOST 同步；日志「窗口置顶初始状态」</text>
+    <path class="edge" d="M592,624 L592,656" marker-end="url(#arrow0)"/>
+
+    <rect class="node-output" x="372" y="660" width="440" height="52" rx="8"/>
+    <text class="node-text" x="592" y="687">进入插拔轮询主循环（见 图 1）</text>
+  </svg>
 
   <!-- ===================== 图 1：主流程 ===================== -->
   <h2 class="sec">图 1 · 主流程：插入 → 执行 → 拔出（循环）</h2>
@@ -435,6 +491,7 @@
   <table class="keys">
     <tr><th style="width:170px">配置键</th><th style="width:150px">判断位置</th><th>取值与作用</th></tr>
     <tr><td class="k">（监控开关）</td><td class="w">图1 · 菱形②</td><td>点〔开始监控〕=1；与 AUTORUN 任一为真 → 1104 显示 AUTO，插盘自动执行整任务</td></tr>
+    <tr><td class="k">TOPMOST</td><td class="w">图0 · 置顶初始化</td><td>1=启动即窗口置顶（缺省）；0=不置顶（仍可勾选框切换）</td></tr>
     <tr><td class="k">AUTORUN</td><td class="w">图1 · 菱形②</td><td>1=插盘即自动执行（无需开监控）；0=需先开监控或手动</td></tr>
     <tr><td class="k">AUTO_COPY</td><td class="w">子图A · 菱形②</td><td>自动流程内是否复制：手动触发总是复制；自动触发须 1 才执行（0=仅手动点〔复制〕）</td></tr>
     <tr><td class="k">AUTO_TEST</td><td class="w">子图A · 菱形④</td><td>自动流程内是否读写测试：手动触发总是执行；自动触发须 1（默认 0）</td></tr>

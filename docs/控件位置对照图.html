@@ -34,10 +34,10 @@
 </head>
 <body>
 <h1>UdiskTools 主窗口（WND_MAIN）控件名称位置对照图</h1>
-<div class="sub">与 ui/resource.h 一一对应 ｜ 版本 v1.0.0-alpha.3 ｜ 热键：T=执行任务　C=执行任务（需勾选"快捷键使能"）</div>
+<div class="sub">与 ui/resource.h 一一对应 ｜ 软件 v1.2.0（2026-10-24）｜ 全局热键：Ctrl+Alt+T=读写测试　Ctrl+Alt+C=复制（需勾选"快捷键使能"）</div>
 
 <div class="frame">
-  <div class="titlebar">U盘拷盘工具 v1.0.0 &nbsp;［出错时标题追加 [!]］ — 窗口类 <b>UDK_MAINCLASS</b></div>
+  <div class="titlebar">U盘拷盘工具（软件 v1.2.0）（配置 v1.0.0） &nbsp;［出错时标题追加 [!]］ — 窗口类 <b>UDK_MAINCLASS</b></div>
 
   <div class="pane"><span class="pane-label">PANE_TOP 第一行：机型下拉 + 操作按钮</span>
     <div class="row">
@@ -52,8 +52,10 @@
     </div>
     <div class="row">
       <div class="ctl">读取标签<b>IDC_BTN_READLABEL 1005</b></div>
-      <div class="ctl">☐窗口置顶<b>IDC_CHK_TOPMOST 1008</b></div>
-      <div class="ctl">☐快捷键使能<b>IDC_CHK_HOTKEY 1013</b></div>
+      <div class="ctl">☑窗口置顶（初始勾选状态=TOPMOST 键，缺省 1）<b>IDC_CHK_TOPMOST 1008</b></div>
+      <div class="ctl" style="color:#888">☐自动复制(AUTO_COPY)<b>IDC_CHK_AUTO_COPY 1009</b>（灰·只读）</div>
+      <div class="ctl" style="color:#888">☐自动测试(AUTO_TEST)<b>IDC_CHK_AUTO_TEST 1018</b>（灰·只读）</div>
+      <div class="ctl">☐快捷键使能（Ctrl+Alt+T/C）<b>IDC_CHK_HOTKEY 1013</b></div>
     </div>
   </div>
 
@@ -62,7 +64,9 @@
     <div class="row">
       <div class="ctl" style="min-width:66px;color:#090;font-weight:bold">AUTO / MANUAL<b>IDC_STC_AUTOMODE 1104</b></div>
       <div class="status" style="flex:1">SRCPATH：.\upgrade\*.*（当前机型配置值）<b>IDC_STC_SRCPATH 1105</b></div>
+      <div class="ctl" style="min-width:80px;font-weight:bold">计数:0000<b>IDC_STC_INSERTCOUNT 1017</b>（监控开启时插盘+1）</div>
     </div>
+    <div class="row"><div class="status" style="flex:1">判定规则：MIN_LEN=…,MUST_CONTAIN=…（AUTO_TEST=1 时显示；=0 时空白）<b>IDC_STC_READRULE 1109</b></div></div>
     <div class="row">
       <div class="status" style="flex:2">设备状态<b>IDC_STC_DEVICE 1201</b></div>
       <div class="status" style="flex:1;color:#d00">✕/✓ 状态徽标<b>IDC_STC_ERROR 1202</b>（正常=绿 / 出错=红）</div>
@@ -148,7 +152,10 @@
     <tr><td>顶部 8 个操作按钮（1002~1016）</td><td><b>统一尺寸等宽等高</b>，文字水平/垂直居中；按钮显示名由 BTN_* 配置，禁用时置灰</td></tr>
     <tr><td>配置窗口键名框 3011</td><td><b>可编辑下拉（CBS_DROPDOWN）</b>：列表选择回填当前值；也可手输列表外的新键名，"说明："行同步提示；配合值输入框 3009 与 [保存修改] 写入 ini</td></tr>
     <tr><td>IDC_STC_READVERDICT 判定</td><td>PASS=绿 / FAIL=红</td></tr>
-    <tr><td>IDC_CHK_HOTKEY 快捷键使能</td><td>勾选=注册 T/C 全局热键；取消=注销（默认不勾选）</td></tr>
+    <tr><td>IDC_CHK_HOTKEY 快捷键使能</td><td>显示文字"快捷键使能（Ctrl+Alt+T/C）"；勾选=注册 Ctrl+Alt+T=读写测试 / Ctrl+Alt+C=复制 全局热键；取消=注销（默认不勾选；任务运行中触发只记日志）</td></tr>
+    <tr><td>IDC_CHK_AUTO_COPY 自动复制（1009，状态框）</td><td><b>灰色只读，不可勾选</b>：仅显示当前机型 AUTO_COPY 配置（勾=自动流程含复制，缺省 1）；值随机型切换/配置保存自动刷新（update_auto_flags_ui）；改值请到配置窗口改 AUTO_COPY 键</td></tr>
+    <tr><td>IDC_CHK_AUTO_TEST 自动测试（1018，状态框）</td><td><b>灰色只读，不可勾选</b>：仅显示当前机型 AUTO_TEST 配置（勾=自动流程含读写测试，缺省 0）；同时驱动 1109 判定规则栏显隐</td></tr>
+    <tr><td>IDC_STC_READRULE 判定规则栏（1109）</td><td><b>AUTO_TEST=1</b> 时整宽一行显示"判定规则：&lt;READRULE&gt;"（未配置显示"（未配置 READRULE）"）；<b>AUTO_TEST=0</b> 时整行空白（只读展示，不改变读取判定逻辑）</td></tr>
     <tr><td>IDC_COMBO_MODEL 机型下拉</td><td>显示 DISPLAYNAME；切换只影响后续任务（与轮询解耦）</td></tr>
     <tr><td>IDC_STC_MONSTATUS 监控状态行</td><td>"监控已停止"=红色字；"监控已开启"=绿色字；"文件已找到"=黑色字（副行蓝色）</td></tr>
     <tr><td>IDC_BTN_CLEARCMD 清屏</td><td>点击清空 CMD-A（IDC_EDIT_ENGINE）显示内容，文件日志不受影响</td></tr>
